@@ -1,5 +1,15 @@
 ## Running XNAT Container Service on microk8s with JVM remote debug support
 
+Clone repo with HTTPS
+```
+git clone https://github.com/Australian-Imaging-Service/ais-devstack
+```
+Or SSH
+```
+git clone git@github.com:Australian-Imaging-Service/ais-devstack.git
+```
+
+
 1.  Install microk8s and required addons
 
     ```
@@ -76,6 +86,7 @@
     ```
 
 8.  Install XNAT using helm chart from ais repo and kustomize
+    
 
     ```
     helm repo add ais https://australian-imaging-service.github.io/charts
@@ -87,14 +98,14 @@
     Note the provided `kustomization.yaml` disables XNAT health checks.  If you
     need health checking, remove entries suffixed with `Probe`
 
-9.  Configure initial XNAT Site Setup
+10.  Configure initial XNAT Site Setup
 
     | Setting      | Value                     |
     | ---          | ---                       |
     | Site URL     | http://xnattesting.local/ |
     | Enable SMTP? | Disabled                  |
 
-10. Configure Container Service plugin Compute Backend
+11. Configure Container Service plugin Compute Backend
 
     | Setting                                             | Value                      |
     | ---                                                 | ---                        |
@@ -105,10 +116,10 @@
     | Archive Directory PVC Name Build Directory PVC Name | pv-xnat-archive            |
     | Build Directory PVC Name                            | pv-xnat-build              |
 
-11. Add dcm2niix command under Images & Commands using
+12. Add dcm2niix command under Images & Commands using
     [command.json](https://github.com/NrgXnat/docker-images/blob/master/dcm2niix/command.json)
 
-12. Enable dcm2niix command under Command Configurations
+13. Enable dcm2niix command under Command Configurations
 
-13. Create test projects proj\_1 AND proj\_2, open project settings and set
+14. Create test projects proj\_1 AND proj\_2, open project settings and set
     dcm2niix command to Enabled
