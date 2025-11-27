@@ -1,0 +1,76 @@
+global:
+  postgresql:
+    auth: 
+      database: xnat
+      username: xnat
+      password: {{ pg_passwd }}
+
+postgresql:
+  image:
+    repository: bitnamilegacy/postgresql
+  primary:
+    persistence:
+      size: 1Gi
+
+xnat-web:
+  postgresql:
+    postgresqlDatabase: xnat
+    postgresqlUsername: xnat
+    postgresqlPassword: {{ pg_passwd }}
+
+  replicaCount: 1
+
+  ingress:
+    enabled: true
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: 12g
+      nginx.ingress.kubernetes.io/proxy-buffer-size: 32k
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "150"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    ingressClassName: nginx
+    hosts:
+      - host: xnattesting.local
+
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2000Mi
+    limits:
+      cpu: 1000m
+      memory: 2000Mi
+
+  nonheapmem: 1000Mi
+
+  persistence:
+    cache:
+      accessMode: ReadWriteOnce
+      mountPath: "/data/xnat/cache"
+      size: 1Gi
+
+  volumes:
+    archive:
+      accessMode: ReadWriteMany
+      existingClaim: "pv-xnat-gpfs"
+      mountPath: "/data/xnat/archive"
+    prearchive:
+      accessMode: ReadWriteMany
+      existingClaim: "pv-xnat-nfs"
+      mountPath: "/data/xnat/prearchive"
+
+  plugins:
+    container-service: []
+    ohif-viewer: {}
+
+  probes:
+    startup:
+      failureThreshold: 30
+      periodSeconds: 20
+    liveness:
+      periodSeconds: 20
+    readiness:
+      periodSeconds: 20
+
+  timezone: Australia/Brisbane
