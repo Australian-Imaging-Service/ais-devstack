@@ -3,7 +3,7 @@ global:
     auth: 
       database: xnat
       username: xnat
-      password: {{ pg_passwd }}
+      password: xnat
 
 postgresql:
   image:
@@ -16,7 +16,7 @@ xnat-web:
   postgresql:
     postgresqlDatabase: xnat
     postgresqlUsername: xnat
-    postgresqlPassword: {{ pg_passwd }}
+    postgresqlPassword: xnat
 
   replicaCount: 1
 
