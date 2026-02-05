@@ -1,217 +1,251 @@
-# Running XNAT Container Service with JVM remote debug support
+# AIS-XNAT Deployment for k3s
+
+XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Service.
 
 ## Prerequisites
 
-Clone repo with HTTPS
-```
-git clone https://github.com/Australian-Imaging-Service/ais-devstack
-```
-Or SSH
-```
-git clone git@github.com:Australian-Imaging-Service/ais-devstack.git
-```
+- Ubuntu 20.04+ or similar Linux distribution
+- Minimum 4GB RAM, 2 CPU cores
+- 600GB+ storage for NFS server
+- Helm 3.x installed
 
-### Site Setup
-
-Check you have an xnattesting entry in your `hosts` file (`C:\Windows\System32\drivers\etc\hosts` on Windows)
+## Directory Structure
 
 ```
-127.0.0.1 xnattesting.local
+ais-xnat/
+├── README.md                    # This file
+├── manifests/
+│   ├── pv.yaml                  # Persistent Volumes (NFS-backed)
+│   ├── pvc.yaml                 # Persistent Volume Claims
+│   ├── configmap.yaml           # XNAT init script ConfigMap
+│   ├── kustomization.yaml       # Kustomize patches for StatefulSet
+│   ├── kustomize.sh             # Helm post-renderer script
+│   └── values.yaml              # XNAT Helm chart values
+├── nfs-server/
+│   └── values.yaml              # NFS server Helm chart values
+├── plugins/
+│   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
+└── scripts/
+    ├── install.sh               # Full installation script
+    └── uninstall.sh             # Uninstallation script
 ```
 
-If using Windows WSL, also add a TCP port proxy that listens on port 80 and forwards connections to WSL port 80.
+## Quick Start
 
-Get WSL IP address for `eth0` in WSL terminal:
+### Install
+
 ```bash
-ip a show dev eth0
+cd /home/ubuntu/ais-xnat
+chmod +x scripts/*.sh manifests/kustomize.sh
+./scripts/install.sh
 ```
 
-Add TCP proxy port in PowerShell admin terminal:
-```powershell
-netsh interface portproxy add v4tov4 listenport=80 listenaddress=0.0.0.0 connectport=80 connectaddress=<eth0_ip>
+### Uninstall
+
+The uninstall script automatically detects whether you're running MicroK8s or k3s:
+
+```bash
+./scripts/uninstall.sh
 ```
 
----
+It will:
+- Remove XNAT and related resources
+- Optionally remove NFS server and CSI driver
+- Optionally remove the entire Kubernetes distribution (MicroK8s or k3s)
 
-## Installation Options
+## Manual Installation
 
-Choose one of the following Kubernetes distributions:
+If you prefer step-by-step installation:
 
-- [Option A: MicroK8s](#option-a-microk8s)
-- [Option B: k3s](#option-b-k3s)
+### Step 1: Install k3s
 
----
+```bash
+curl -sfL https://get.k3s.io | sh -
 
-### Option A: MicroK8s
+# Configure kubectl
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown $USER:$USER ~/.kube/config
+```
 
-1.  Install microk8s and required addons
+### Step 2: Install Helm (if not installed)
 
-    ```bash
-    sudo snap install microk8s --classic
-    sudo microk8s start
-    sudo microk8s enable ingress hostpath-storage
-    sudo microk8s status
-    ```
+```bash
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
 
-2.  Add helm and kubectl aliases to bashrc
+### Step 3: Install NGINX Ingress Controller
 
-    ```bash
-    # go to end ~/.bashrc and add the following entries
-    alias kubectl="microk8s kubectl"
-    alias k="microk8s kubectl"
-    alias helm="microk8s helm"
-    ```
+k3s comes with Traefik by default, but XNAT requires nginx-specific annotations for large file uploads:
 
-3.  Add yourself to microk8s group
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
 
-    ```bash
-    sudo usermod -a -G microk8s $USER
-    ```
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace \
+  --set controller.publishService.enabled=true
+```
 
-    Close terminal and reopen to get aliases and group
+### Step 4: Install NFS CSI Driver
 
-4.  Install NFS server using helm chart from rcc-portals repo, add required exports
+```bash
+helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
 
-    ```bash
-    kubectl create ns storage
-    helm -n storage install nfs-server rcc-portals/charts/nfs-server \
-      --set persistence.storageClass=microk8s-hostpath \
-      --set persistence.size=1Gi
-    kubectl -n storage exec deploy/nfs-server -- mkdir -p \
-      /exports/xnat/data /exports/xnat/plugins
-    ```
+helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
+  --namespace kube-system \
+  --set kubeletDir=/var/lib/kubelet
+```
 
-5.  Install the NFS CSI driver
+### Step 5: Deploy NFS Server
 
-    ```bash
-    helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-    helm repo update
-    helm -n kube-system install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
-      --set kubeletDir=/var/snap/microk8s/common/var/lib/kubelet
-    ```
+```bash
+kubectl create namespace storage
 
-6.  Create the XNAT namespace
+# Deploy using the nfs-server helm chart
+helm install nfs-server ./nfs-server \
+  --namespace storage \
+  --values nfs-server/values.yaml
 
-    ```bash
-    kubectl create ns ais-xnat
-    ```
+# Wait for pod to be ready
+kubectl -n storage get pods -w
 
-7.  Install XNAT using helm chart from ais repo and kustomize
+# Create required directories
+kubectl -n storage exec deploy/nfs-server -- mkdir -p \
+  /exports/gpfs /exports/xnat/data/build /exports/xnat/plugins
+```
 
-    ```bash
-    helm repo add ais https://australian-imaging-service.github.io/charts
-    helm repo update
-    helm -n ais-xnat install xnat-web ais/xnat --values values.yaml \
-      --post-renderer ./kustomize-microk8s.sh
-    ```
+### Step 6: Deploy XNAT
 
-    Note: The provided `kustomization.yaml` disables XNAT health checks. If you need health checking, remove entries suffixed with `Probe`.
+```bash
+# Create namespace
+kubectl create namespace ais-xnat
 
----
+# Apply storage resources
+kubectl apply -f manifests/pv.yaml
+kubectl apply -f manifests/pvc.yaml
+kubectl apply -f manifests/configmap.yaml
 
-### Option B: k3s
+# Add AIS Helm repo
+helm repo add ais https://australian-imaging-service.github.io/charts
+helm repo update
 
-1.  Install k3s with nginx ingress controller
+# Install XNAT with kustomize patches
+chmod +x manifests/kustomize.sh
+helm install xnat-web ais/xnat \
+  --namespace ais-xnat \
+  --values manifests/values.yaml \
+  --post-renderer ./manifests/kustomize.sh
+```
 
-    ```bash
-    # Install k3s without Traefik (we'll use nginx instead)
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
-    
-    # Set up kubeconfig for current user
-    mkdir -p ~/.kube
-    sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-    sudo chown $USER:$USER ~/.kube/config
-    chmod 600 ~/.kube/config
-    
-    # Verify k3s is running
-    kubectl get nodes
-    ```
+### Step 7: Verify Installation
 
-2.  Install nginx ingress controller
+```bash
+# Watch pods start up
+kubectl -n ais-xnat get pods -w
 
-    ```bash
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.1/deploy/static/provider/cloud/deploy.yaml
-    
-    # Wait for ingress controller to be ready
-    kubectl wait --namespace ingress-nginx \
-      --for=condition=ready pod \
-      --selector=app.kubernetes.io/component=controller \
-      --timeout=120s
-    ```
+# Port forward to access locally
+kubectl -n ais-xnat port-forward svc/xnat-web 8080:80
+```
 
-3.  Add kubectl and helm aliases to bashrc (optional)
+Access XNAT at http://localhost:8080 (default: admin/admin)
 
-    ```bash
-    # go to end ~/.bashrc and add the following entries
-    alias k="kubectl"
-    ```
+## Key Differences from MicroK8s
 
-    Close terminal and reopen to get aliases
+| Component | MicroK8s | k3s |
+|-----------|----------|-----|
+| Kubelet path | `/var/snap/microk8s/common/var/lib/kubelet` | `/var/lib/kubelet` |
+| Default storage class | `microk8s-hostpath` | `local-path` |
+| Default ingress | nginx (addon) | Traefik (requires nginx install) |
+| kubectl | `microk8s kubectl` | `kubectl` |
+| helm | `microk8s helm` | `helm` |
+| Config location | Snap-based | `/etc/rancher/k3s/` |
 
-4.  Install NFS server using helm chart from rcc-portals repo, add required exports
+## Configuration
 
-    ```bash
-    # Add helm repo if not already added
-    helm repo add rcc-portals https://australian-imaging-service.github.io/rcc-portals
-    helm repo update
-    
-    kubectl create ns storage
-    helm -n storage install nfs-server rcc-portals/charts/nfs-server \
-      --set persistence.storageClass=local-path \
-      --set persistence.size=1Gi
-    kubectl -n storage exec deploy/nfs-server -- mkdir -p \
-      /exports/xnat/data /exports/xnat/plugins
-    ```
+### Ingress Host
 
-5.  Install the NFS CSI driver
+Edit `manifests/values.yaml` to change the ingress hostname:
 
-    ```bash
-    helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-    helm repo update
-    helm -n kube-system install csi-driver-nfs csi-driver-nfs/csi-driver-nfs
-    ```
+```yaml
+xnat-web:
+  ingress:
+    hosts:
+      - host: your-domain.example.com
+```
 
-6.  Create the XNAT namespace
+### OpenID Authentication
 
-    ```bash
-    kubectl create ns ais-xnat
-    ```
+Update the OpenID settings in `manifests/values.yaml`:
 
-7.  Install XNAT using helm chart from ais repo and kustomize
+```yaml
+xnat-web:
+  plugins:
+    openid-auth-plugin:
+      - openid:
+          aaf:
+            clientId: "your-client-id"
+            clientSecret: "your-client-secret"
+```
 
-    ```bash
-    helm repo add ais https://australian-imaging-service.github.io/charts
-    helm repo update
-    helm -n ais-xnat install xnat-web ais/xnat --values values.yaml \
-      --post-renderer ./kustomize-k3s.sh
-    ```
+### Storage Size
 
-    Note: The provided `kustomization.yaml` disables XNAT health checks. If you need health checking, remove entries suffixed with `Probe`.
+Edit `nfs-server/values.yaml`:
 
----
+```yaml
+persistence:
+  size: 600Gi  # Adjust as needed
+```
 
-## Common Configuration
+## Troubleshooting
 
-1.  Configure initial XNAT Site Setup
+### XNAT pod stuck in Init
 
-    | Setting      | Value                     |
-    | ---          | ---                       |
-    | Site URL     | http://xnattesting.local/ |
-    | Enable SMTP? | Disabled                  |
+```bash
+kubectl -n ais-xnat describe pod xnat-web-0
+kubectl -n ais-xnat logs xnat-web-0 -c home-init
+```
 
-2.  Configure Container Service plugin Compute Backend
+### NFS connection issues
 
-    | Setting                                             | Value                      |
-    | ---                                                 | ---                        |
-    | Host Name                                           | pipelines                  |
-    | Type                                                | Kubernetes                 |
-    | Automatically clean up containers?                  | ON (OFF if debugging)      |
-    | PVC Setup                                           | Separate Archive and Build |
-    | Archive Directory PVC Name Build Directory PVC Name | pv-xnat-archive            |
-    | Build Directory PVC Name                            | pv-xnat-build              |
+```bash
+# Check NFS server is running
+kubectl -n storage get pods
+kubectl -n storage logs deploy/nfs-server
 
-3.  Add dcm2niix command under Images & Commands using [command.json](https://github.com/NrgXnat/docker-images/blob/master/dcm2niix/command.json)
+# Check PV/PVC binding
+kubectl get pv
+kubectl -n ais-xnat get pvc
+```
 
-4.  Enable dcm2niix command under Command Configurations
+### Database issues
 
-5.  Create test projects proj\_1 AND proj\_2, open project settings and set dcm2niix command to Enabled
+```bash
+kubectl -n ais-xnat logs xnat-web-0-postgresql-0
+```
+
+## Plugins
+
+Plugins in the `plugins/` directory are automatically copied to the NFS server during installation.
+
+**Pre-installed plugins:**
+- `container-service-3.7.2-uq-fat.jar` - Container service plugin
+
+**To add more plugins:**
+
+1. Place JAR files in `plugins/` before running install, OR
+2. Copy manually after installation:
+
+```bash
+# Copy plugin jar to NFS server
+kubectl -n storage cp my-plugin.jar \
+  $(kubectl -n storage get pods -l app=nfs-server -o name | cut -d/ -f2):/exports/xnat/plugins/
+
+# Restart XNAT to load new plugins
+kubectl -n ais-xnat rollout restart statefulset xnat-web
+```
+
+## Next Steps
+
+After XNAT is running, you can deploy JupyterHub integration using the `ais-jupyterhub` repository.
