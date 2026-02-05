@@ -13,6 +13,27 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Create values.yaml from templates if they don't exist
+if [ ! -f "$BASE_DIR/manifests/values.yaml" ]; then
+    if [ -f "$BASE_DIR/manifests/values.yaml.template" ]; then
+        cp "$BASE_DIR/manifests/values.yaml.template" "$BASE_DIR/manifests/values.yaml"
+        echo "Created manifests/values.yaml from template"
+    else
+        echo -e "${RED}Error: manifests/values.yaml.template not found${NC}"
+        exit 1
+    fi
+fi
+
+if [ ! -f "$BASE_DIR/nfs-server/values.yaml" ]; then
+    if [ -f "$BASE_DIR/nfs-server/values.yaml.template" ]; then
+        cp "$BASE_DIR/nfs-server/values.yaml.template" "$BASE_DIR/nfs-server/values.yaml"
+        echo "Created nfs-server/values.yaml from template"
+    else
+        echo -e "${RED}Error: nfs-server/values.yaml.template not found${NC}"
+        exit 1
+    fi
+fi
+
 echo -e "${BLUE}"
 echo "=========================================="
 echo "   AIS-XNAT Installation (k3s)"
