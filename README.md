@@ -12,7 +12,7 @@ XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Servic
 ## Directory Structure
 
 ```
-ais-xnat/
+ais-devstack/
 ├── README.md                    # This file
 ├── manifests/
 │   ├── pv.yaml                  # Persistent Volumes (NFS-backed)
@@ -35,7 +35,7 @@ ais-xnat/
 ### Install
 
 ```bash
-cd /home/ubuntu/ais-xnat
+cd /home/ubuntu/ais-devstack
 chmod +x scripts/*.sh manifests/kustomize.sh
 ./scripts/install.sh
 ```
