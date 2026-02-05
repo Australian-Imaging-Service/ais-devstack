@@ -24,6 +24,5 @@ Thumbs.db
 # Uncomment if you have secret files
 # *-secret.yaml
 
-# Generated values files
-manifests/values.yaml
-nfs-server/values.yaml
+# Local values files (copy from .template)
+**/values.yaml
