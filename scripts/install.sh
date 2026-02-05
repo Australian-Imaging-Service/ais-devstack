@@ -312,6 +312,8 @@ echo "  Then open: http://localhost:8080"
 echo ""
 echo "Default admin credentials: admin / admin"
 echo ""
+# Get the final configured host
+FINAL_HOST=$(grep -A1 "hosts:" "$VALUES_FILE" | grep "host:" | head -1 | awk '{print $3}')
 echo "Ingress URL (if DNS configured):"
-echo "  http://xnat-test.ssdsorg.cloud.edu.au"
+echo "  http://$FINAL_HOST"
 echo ""
