@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
 JUPYTERHUB_DIR="$BASE_DIR/jupyterhub"
 VALUES_FILE="$BASE_DIR/manifests/values.yaml"
+JUPYTERHUB_VALUES_TEMPLATE="$JUPYTERHUB_DIR/5-jupyterhub-values.yaml.template"
 JUPYTERHUB_VALUES="$JUPYTERHUB_DIR/5-jupyterhub-values.yaml"
 
 echo -e "${BLUE}"
@@ -39,6 +40,19 @@ if [ ! -d "$JUPYTERHUB_DIR" ]; then
     exit 1
 fi
 echo -e "${GREEN}JupyterHub directory found${NC}"
+
+# Create values.yaml from template if it doesn't exist
+if [ ! -f "$JUPYTERHUB_VALUES" ]; then
+    if [ -f "$JUPYTERHUB_VALUES_TEMPLATE" ]; then
+        cp "$JUPYTERHUB_VALUES_TEMPLATE" "$JUPYTERHUB_VALUES"
+        echo -e "${GREEN}Created jupyterhub/5-jupyterhub-values.yaml from template${NC}"
+    else
+        echo -e "${RED}Error: $JUPYTERHUB_VALUES_TEMPLATE not found${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}JupyterHub values.yaml found${NC}"
+fi
 
 # Check kubectl access
 if ! kubectl get nodes &> /dev/null; then

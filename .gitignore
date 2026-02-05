@@ -26,3 +26,4 @@ Thumbs.db
 
 # Local values files (copy from .template)
 **/values.yaml
+jupyterhub/5-jupyterhub-values.yaml

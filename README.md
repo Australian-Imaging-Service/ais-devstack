@@ -27,7 +27,7 @@ ais-devstack/
 │   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
 ├── jupyterhub/                  # JupyterHub integration (git subtree)
 │   ├── INSTALL.sh               # JupyterHub orchestrator
-│   ├── 5-jupyterhub-values.yaml # JupyterHub Helm values
+│   ├── 5-jupyterhub-values.yaml.template  # JupyterHub config template
 │   └── ...                      # See jupyterhub/README.md
 └── scripts/
     ├── install.sh               # XNAT install (prompts for JupyterHub)
