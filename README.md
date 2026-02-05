@@ -181,18 +181,54 @@ xnat-web:
       - host: your-domain.example.com
 ```
 
-### OpenID Authentication
+### OpenID Connect (OIDC) Authentication
 
-Update the OpenID settings in `manifests/values.yaml`:
+Both XNAT and JupyterHub use OIDC for authentication. You need to register each service with your OIDC provider (e.g., AAF - Australian Access Federation).
+
+#### Step 1: Register OIDC Services
+
+Register **two separate OIDC clients** with your provider:
+
+| Service | Callback URL |
+|---------|--------------|
+| XNAT | `https://your-domain.example.com/openid-login` |
+| JupyterHub | `https://your-domain.example.com/jupyter/hub/oauth_callback` |
+
+For AAF, register at: https://manager.test.aaf.edu.au/ (test) or https://manager.aaf.edu.au/ (production)
+
+#### Step 2: Configure XNAT
+
+Update `manifests/values.yaml` with your XNAT OIDC credentials:
 
 ```yaml
 xnat-web:
   plugins:
     openid-auth-plugin:
-      - openid:
+      - siteUrl: "http://your-domain.example.com"
+        openid:
           aaf:
-            clientId: "your-client-id"
-            clientSecret: "your-client-secret"
+            clientId: "your-xnat-client-id"
+            clientSecret: "your-xnat-client-secret"
+            scopes: "openid,profile,email"
+```
+
+#### Step 3: Configure JupyterHub
+
+Update `jupyterhub/5-jupyterhub-values.yaml` (copied from template) with your JupyterHub OIDC credentials:
+
+```yaml
+hub:
+  config:
+    GenericOAuthenticator:
+      client_id: "your-jupyterhub-client-id"
+      client_secret: "your-jupyterhub-client-secret"
+      oauth_callback_url: "https://your-domain.example.com/jupyter/hub/oauth_callback"
+```
+
+Then upgrade JupyterHub:
+```bash
+helm upgrade jupyterhub jupyterhub/jupyterhub -n jupyter \
+  --values jupyterhub/5-jupyterhub-values.yaml
 ```
 
 ### Storage Size
