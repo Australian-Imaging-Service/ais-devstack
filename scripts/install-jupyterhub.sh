@@ -142,12 +142,15 @@ echo "Access URLs:"
 echo "  XNAT:       http://$DOMAIN"
 echo "  JupyterHub: http://$DOMAIN/jupyter"
 echo ""
+API_TOKEN=$(grep -A1 'xnat-service:' "$JUPYTERHUB_VALUES" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
+API_TOKEN=${API_TOKEN:-"<check jupyterhub/5-jupyterhub-values.yaml>"}
+
 echo -e "${BLUE}XNAT JupyterHub Plugin Configuration:${NC}"
 echo "  Go to: XNAT -> Administer -> Plugin Settings -> JupyterHub"
 echo ""
 echo "  JupyterHub Host URL:  http://$DOMAIN/"
 echo "  JupyterHub API URL:   http://proxy-public.jupyter.svc.cluster.local/jupyter/hub/api"
-echo "  API Token:            $(grep -A1 'xnat-service:' "$JUPYTERHUB_VALUES" | grep 'apiToken:' | awk -F'"' '{print $2}')"
+echo "  API Token:            $API_TOKEN"
 echo ""
 echo "  See jupyterhub/XNAT-CONFIGURATION.md for detailed setup instructions"
 echo ""
