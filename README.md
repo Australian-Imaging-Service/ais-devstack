@@ -192,7 +192,7 @@ Register **two separate OIDC clients** with your provider:
 | Service | Callback URL |
 |---------|--------------|
 | XNAT | `https://your-domain.example.com/openid-login` |
-| JupyterHub | `https://your-domain.example.com/jupyter/hub/oauth_callback` |
+| JupyterHub | `https://your-domain.example.com/hub/oauth_callback` |
 
 For AAF, register at: https://manager.test.aaf.edu.au/ (test) or https://manager.aaf.edu.au/ (production)
 
@@ -222,7 +222,7 @@ hub:
     GenericOAuthenticator:
       client_id: "your-jupyterhub-client-id"
       client_secret: "your-jupyterhub-client-secret"
-      oauth_callback_url: "https://your-domain.example.com/jupyter/hub/oauth_callback"
+      oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
 ```
 
 Then upgrade JupyterHub:
