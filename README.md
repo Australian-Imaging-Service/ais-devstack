@@ -20,14 +20,20 @@ ais-devstack/
 │   ├── configmap.yaml           # XNAT init script ConfigMap
 │   ├── kustomization.yaml       # Kustomize patches for StatefulSet
 │   ├── kustomize.sh             # Helm post-renderer script
-│   └── values.yaml              # XNAT Helm chart values
+│   └── values.yaml              # XNAT Helm chart values (domain config)
 ├── nfs-server/
 │   └── values.yaml              # NFS server Helm chart values
 ├── plugins/
 │   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
+├── jupyterhub/                  # JupyterHub integration (git subtree)
+│   ├── INSTALL.sh               # JupyterHub orchestrator
+│   ├── 5-jupyterhub-values.yaml # JupyterHub Helm values
+│   └── ...                      # See jupyterhub/README.md
 └── scripts/
-    ├── install.sh               # Full installation script
-    └── uninstall.sh             # Uninstallation script
+    ├── install.sh               # XNAT install (prompts for JupyterHub)
+    ├── install-jupyterhub.sh    # JupyterHub installation
+    ├── uninstall.sh             # XNAT uninstallation
+    └── uninstall-jupyterhub.sh  # JupyterHub uninstallation
 ```
 
 ## Quick Start
@@ -246,6 +252,51 @@ kubectl -n storage cp my-plugin.jar \
 kubectl -n ais-xnat rollout restart statefulset xnat-web
 ```
 
-## Next Steps
+## JupyterHub Integration
 
-After XNAT is running, you can deploy JupyterHub integration using the `ais-jupyterhub` repository.
+JupyterHub provides interactive Jupyter notebooks integrated with XNAT. The `jupyterhub/` directory contains the JupyterHub deployment as a git subtree from [ais-jupyterhub](https://github.com/Australian-Imaging-Service/ais-jupyterhub).
+
+### Install JupyterHub
+
+**Option 1:** During XNAT installation, answer "y" when prompted:
+```
+Install JupyterHub? (y/N): y
+```
+
+**Option 2:** Install separately after XNAT is running:
+```bash
+./scripts/install-jupyterhub.sh
+```
+
+The install script automatically reads the domain from `manifests/values.yaml` and configures JupyterHub to use the same domain.
+
+### Uninstall JupyterHub
+
+```bash
+./scripts/uninstall-jupyterhub.sh
+```
+
+### Update JupyterHub from Upstream
+
+The `jupyterhub/` directory is a git subtree. To pull updates from the upstream ais-jupyterhub repository:
+
+```bash
+git subtree pull --prefix=jupyterhub \
+  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
+  Development_AB --squash
+```
+
+To push local changes back to upstream (if you have write access):
+
+```bash
+git subtree push --prefix=jupyterhub \
+  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
+  Development_AB
+```
+
+### JupyterHub Documentation
+
+See the following files in `jupyterhub/` for more details:
+- `README.md` - Architecture overview
+- `XNAT-CONFIGURATION.md` - XNAT plugin setup
+- `TROUBLESHOOTING.md` - Common issues and solutions
