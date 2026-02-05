@@ -7,11 +7,11 @@
 # ===============================================================================================================================
 
 hub:
-  baseUrl: /jupyter
+  baseUrl: /
   config:
     JupyterHub:
       authenticator_class: generic-oauth
-      base_url: /jupyter
+      base_url: /
       log_level: INFO
       allow_named_servers: true  # Enable multiple servers per user (XNAT uses named servers with timestamps)
       named_server_limit_per_user: 1
@@ -20,7 +20,7 @@ hub:
       # DEV: Secrets kept inline (not moved to separate file)
       client_id: "70870f7a-f70e-4acd-829f-0f611f1d40de"
       client_secret: "wdNMMmFGmufaMsP6txVEolL9vbNMyuZ0CFQuaxzpdZGqKFk27QquTQ6FOGChH9GmNXx4Vkmwkok2"
-      oauth_callback_url: "https://xnat-test.ssdsorg.cloud.edu.au/jupyter/hub/oauth_callback"
+      oauth_callback_url: "https://xnat-test.ssdsorg.cloud.edu.au/hub/oauth_callback"
       authorize_url: "https://central.test.aaf.edu.au/providers/op/authorize"
       token_url: "https://central.test.aaf.edu.au/providers/op/token"
       userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
@@ -76,7 +76,7 @@ hub:
         - --timeout=86400
         - --cull-every=3600
         - --cull-users
-        - --url=http://localhost:8081/jupyter/hub/api
+        - --url=http://localhost:8081/hub/api
 
   extraEnv:
     JUPYTERHUB_CRYPT_KEY_HEX: "62c5252a18d4c48ea3b6ca199f501c439a58be3521d01f0055518a1d2a46c3fe"
