@@ -1,0 +1,97 @@
+# Prometheus Stack Configuration for CVMFS Metrics Monitoring
+# Adapted from neurocloud for ais-jupyterhub
+
+# Prometheus Operator settings
+cleanPrometheusOperatorObjectNames: true
+nameOverride: monitor
+
+prometheusOperator:
+  admissionWebhooks:
+    enabled: false  # Disable webhooks for simpler setup
+    patch:
+      enabled: false
+  tls:
+    enabled: false  # Disable TLS to avoid secret requirement
+
+# Prometheus server configuration
+prometheus:
+  prometheusSpec:
+    # CRITICAL: Discover ServiceMonitors from ALL namespaces (including mounts)
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    # Storage for metrics retention
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 20Gi
+    # Retention settings
+    retention: 15d
+    retentionSize: "18GB"
+
+# Grafana configuration
+grafana:
+  enabled: true
+  adminPassword: admin  # Change this in production!
+  sidecar:
+    dashboards:
+      enabled: true
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+  defaultDashboardsEnabled: true
+  persistence:
+    enabled: true
+    size: 5Gi
+  service:
+    type: NodePort
+    nodePort: 31000
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      serve_from_sub_path: false
+
+# Alertmanager configuration
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 2Gi
+
+# kube-state-metrics for pod labels
+kube-state-metrics:
+  metricLabelsAllowlist:
+    - pods=[app,component,hub.jupyter.org/username]
+    - nodes=[*]
+
+# Disable rules that may cause noise on MicroK8s
+defaultRules:
+  rules:
+    kubelet: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeControllerManager: false
+  disabled:
+    NodeFilesystemSpaceFillingUp: true
+    NodeFilesystemAlmostOutOfSpace: true
+    KubeletPodStartUpLatencyHigh: true
+    CPUThrottlingHigh: true
+
+# Node exporter for system metrics
+nodeExporter:
+  enabled: true
+
+# Prometheus node exporter
+prometheus-node-exporter:
+  hostRootFsMount:
+    enabled: true
+    mountPropagation: HostToContainer
