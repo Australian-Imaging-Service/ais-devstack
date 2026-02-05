@@ -317,3 +317,21 @@ FINAL_HOST=$(grep -A1 "hosts:" "$VALUES_FILE" | grep "host:" | head -1 | awk '{p
 echo "Ingress URL (if DNS configured):"
 echo "  http://$FINAL_HOST"
 echo ""
+
+# Prompt for JupyterHub installation
+echo -e "${BLUE}=========================================="
+echo "   Optional: JupyterHub Integration"
+echo "==========================================${NC}"
+echo ""
+echo "JupyterHub provides interactive Jupyter notebooks integrated with XNAT."
+echo ""
+read -p "Install JupyterHub? (y/N): " install_jupyterhub
+if [[ "$install_jupyterhub" =~ ^[Yy]$ ]]; then
+    echo ""
+    "$SCRIPT_DIR/install-jupyterhub.sh"
+else
+    echo ""
+    echo "You can install JupyterHub later by running:"
+    echo "  ./scripts/install-jupyterhub.sh"
+    echo ""
+fi
