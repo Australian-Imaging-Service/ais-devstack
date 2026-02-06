@@ -2,8 +2,25 @@
 # ==========================================================
 # - Internal culling: 2 hours idle timeout (aggressive, pod-level)
 # - External culling: 24 hours idle timeout (backup, hub-level)
-# - Username: aaf_{sub_claim} matches XNAT username exactly
-# - eduPersonPrincipalName stored separately for future use
+# - Username: {provider}_{sub_claim} matches XNAT username exactly
+# - Supports both Google OIDC (for development) and AAF (for Australian institutions)
+# ===============================================================================================================================
+#
+# AUTHENTICATION OPTIONS:
+# -----------------------
+# Choose ONE provider below and uncomment its configuration.
+# Both XNAT and JupyterHub must use the same provider.
+#
+# Option A: Google OIDC (recommended for development/testing)
+#   - Easy setup via Google Cloud Console
+#   - Works worldwide
+#   - See README.md for setup instructions
+#
+# Option B: AAF (Australian Access Federation)
+#   - For Australian research institutions
+#   - Register at: https://manager.aaf.edu.au/
+#   - See README.md for setup instructions
+#
 # ===============================================================================================================================
 
 hub:
@@ -17,17 +34,33 @@ hub:
       named_server_limit_per_user: 1
 
     GenericOAuthenticator:
-      # DEV: Secrets kept inline (not moved to separate file)
-      client_id: "70870f7a-f70e-4acd-829f-0f611f1d40de"
-      client_secret: "wdNMMmFGmufaMsP6txVEolL9vbNMyuZ0CFQuaxzpdZGqKFk27QquTQ6FOGChH9GmNXx4Vkmwkok2"
-      oauth_callback_url: "https://xnat-test.ssdsorg.cloud.edu.au/hub/oauth_callback"
-      authorize_url: "https://central.test.aaf.edu.au/providers/op/authorize"
-      token_url: "https://central.test.aaf.edu.au/providers/op/token"
-      userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
-      login_service: "AAF"
-      username_claim: "sub"  # Use sub claim with aaf_ prefix normalization to match XNAT username
-      scope: [openid, profile, email, eduperson_principal_name, eduperson_scoped_affiliation, eduperson_affiliation, eduperson_assurance, schac_home_organization, aueduperson]
+      # ===========================================
+      # OPTION A: Google OIDC (uncomment to use)
+      # ===========================================
+      client_id: "YOUR_GOOGLE_CLIENT_ID"
+      client_secret: "YOUR_GOOGLE_CLIENT_SECRET"
+      oauth_callback_url: "https://YOUR_DOMAIN/hub/oauth_callback"
+      authorize_url: "https://accounts.google.com/o/oauth2/v2/auth"
+      token_url: "https://oauth2.googleapis.com/token"
+      userdata_url: "https://openidconnect.googleapis.com/v1/userinfo"
+      login_service: "Google"
+      username_claim: "sub"
+      scope: [openid, profile, email]
       allow_all: true
+
+      # ===========================================
+      # OPTION B: AAF (comment out Google above, uncomment below)
+      # ===========================================
+      # client_id: "YOUR_AAF_CLIENT_ID"
+      # client_secret: "YOUR_AAF_CLIENT_SECRET"
+      # oauth_callback_url: "https://YOUR_DOMAIN/hub/oauth_callback"
+      # authorize_url: "https://central.test.aaf.edu.au/providers/op/authorize"
+      # token_url: "https://central.test.aaf.edu.au/providers/op/token"
+      # userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
+      # login_service: "AAF"
+      # username_claim: "sub"
+      # scope: [openid, profile, email, eduperson_principal_name, eduperson_scoped_affiliation, eduperson_affiliation, eduperson_assurance, schac_home_organization, aueduperson]
+      # allow_all: true
 
     Authenticator:
       enable_auth_state: false
@@ -83,6 +116,9 @@ hub:
     XNAT_HOST: "xnat-web.ais-xnat.svc.cluster.local"
     XNAT_USER: "admin"
     XNAT_PASSWORD: "admin"
+    # Set to 'google' or 'aaf' to match your OIDC provider
+    # This determines the username prefix (google_{sub} or aaf_{sub})
+    OIDC_PROVIDER_PREFIX: "google"
 
   extraConfig:
     00_set_crypt_key: |
@@ -113,34 +149,39 @@ hub:
       from jupyterhub.handlers import BaseHandler
       from jupyterhub import orm
       import json
+      import os
+
+      # Detect provider from login_service config (set by GenericOAuthenticator)
+      # Default to 'google' if not specified
+      PROVIDER_PREFIX = os.environ.get('OIDC_PROVIDER_PREFIX', 'google')
 
       def normalize_username(username):
           """
-          Normalize username by adding aaf_ prefix to match XNAT username.
+          Normalize username by adding provider prefix to match XNAT username.
 
-          JupyterHub username = XNAT username = aaf_{sub_claim}
+          JupyterHub username = XNAT username = {provider}_{sub_claim}
 
-          - Sub claim from AAF login: comes without aaf_ prefix
-          - XNAT username: has aaf_ prefix
-          - JupyterHub username: aaf_{sub_claim} (matches XNAT exactly)
+          Supports:
+          - Google OIDC: google_{sub_claim}
+          - AAF: aaf_{sub_claim}
 
-          This function adds aaf_ prefix if not already present.
+          This function adds the provider prefix if not already present.
           """
           if not username:
               return username
 
-          # If already has aaf_ prefix, return as-is
-          if username.startswith('aaf_'):
+          # If already has a known provider prefix, return as-is
+          if username.startswith('google_') or username.startswith('aaf_'):
               return username
 
-          # Add aaf_ prefix to match XNAT username format
-          return f'aaf_{username}'
+          # Add provider prefix to match XNAT username format
+          return f'{PROVIDER_PREFIX}_{username}'
 
-      def normalize_aaf(self, username):
-          """Override JupyterHub normalizer to add aaf_ prefix"""
+      def normalize_oidc(self, username):
+          """Override JupyterHub normalizer to add provider prefix"""
           return normalize_username(username)
 
-      GenericOAuthenticator.normalize_username = normalize_aaf
+      GenericOAuthenticator.normalize_username = normalize_oidc
 
       original_authenticate = GenericOAuthenticator.authenticate
 
@@ -149,22 +190,22 @@ hub:
           Authenticate and store mapping information in database.
 
           Stores three fields:
-          1. name (primary key): aaf_{sub_claim} - JupyterHub username (same as XNAT)
-          2. xnat_username: aaf_{sub_claim} - redundant storage for mapping compatibility
-          3. eduperson_principal_name: raw email from AAF - stored for future use
+          1. name (primary key): {provider}_{sub_claim} - JupyterHub username (same as XNAT)
+          2. xnat_username: {provider}_{sub_claim} - redundant storage for mapping compatibility
+          3. eduperson_principal_name: email from OIDC provider - stored for reference
           """
           result = await original_authenticate(self, handler, data, **kwargs)
 
           if result and isinstance(result, dict):
-              username = result.get('name')  # This is the normalized sub claim: aaf_{sub}
+              username = result.get('name')  # This is the normalized sub claim: {provider}_{sub}
 
               if username:
                   auth_state = result.get('auth_state', {})
                   user_info = auth_state.get('oauth_user', {})
 
                   if user_info:
-                      # Get eduPersonPrincipalName (email format) for future use
-                      eduperson_principal = user_info.get('edu_person_principal_name', '')
+                      # Get email from OIDC provider (works for both Google and AAF)
+                      user_email = user_info.get('email', '') or user_info.get('edu_person_principal_name', '')
 
                       user = self.db.query(orm.User).filter_by(name=username).first()
                       if user:
@@ -172,13 +213,13 @@ hub:
                           if not user.xnat_username:
                               user.xnat_username = username
 
-                          # Store eduPersonPrincipalName for future use
-                          if not user.eduperson_principal_name and eduperson_principal:
-                              user.eduperson_principal_name = eduperson_principal
+                          # Store email for reference
+                          if not user.eduperson_principal_name and user_email:
+                              user.eduperson_principal_name = user_email
 
                           self.db.commit()
                   else:
-                      self.log.warning(f"AAF did not return user info for {username}")
+                      self.log.warning(f"OIDC provider did not return user info for {username}")
 
           return result
 
