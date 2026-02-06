@@ -115,26 +115,41 @@ fi
 # Clean up cluster-scoped SPO resources
 echo "Cleaning up cluster-scoped security resources..."
 
-# Delete all SPO CRDs (this will cascade delete all CR instances)
-$KUBECTL get crd 2>/dev/null | grep 'security-profiles-operator.x-k8s.io' | awk '{print $1}' | xargs -r $KUBECTL delete crd 2>/dev/null || true
+# Delete webhooks FIRST (before any other API calls that they could intercept and hang)
+$KUBECTL delete mutatingwebhookconfiguration spo-mutating-webhook-configuration 2>/dev/null || true
+$KUBECTL delete validatingwebhookconfiguration spo-validating-webhook-configuration 2>/dev/null || true
+
+# Delete all SPO CRDs - strip finalizers first to prevent hanging on Terminating state
+for crd in $($KUBECTL get crd 2>/dev/null | grep 'security-profiles-operator.x-k8s.io' | awk '{print $1}'); do
+    $KUBECTL patch crd "$crd" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+    $KUBECTL delete crd "$crd" --timeout=10s 2>/dev/null || true
+done
 
 # Delete ClusterRoles and ClusterRoleBindings
 $KUBECTL get clusterrole 2>/dev/null | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs -r $KUBECTL delete clusterrole 2>/dev/null || true
 $KUBECTL get clusterrolebinding 2>/dev/null | grep -E "(spo-|security-profiles)" | awk '{print $1}' | xargs -r $KUBECTL delete clusterrolebinding 2>/dev/null || true
-
-# Delete webhooks
-$KUBECTL delete mutatingwebhookconfiguration spo-mutating-webhook-configuration 2>/dev/null || true
-$KUBECTL delete validatingwebhookconfiguration spo-validating-webhook-configuration 2>/dev/null || true
 
 # Delete any ServiceMonitors
 $KUBECTL delete servicemonitor -n security --all 2>/dev/null || true
 
 # Clean up cert-manager (installed for security-profiles-operator)
 echo "Cleaning up cert-manager..."
-$KUBECTL delete -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml 2>/dev/null || echo "cert-manager not found or already removed"
-
-# Wait for cert-manager namespace to be deleted
-$KUBECTL wait --for=delete namespace cert-manager --timeout=60s 2>/dev/null || true
+# Delete cert-manager webhooks FIRST to prevent them blocking subsequent API calls
+$KUBECTL delete mutatingwebhookconfiguration cert-manager-webhook 2>/dev/null || true
+$KUBECTL delete validatingwebhookconfiguration cert-manager-webhook 2>/dev/null || true
+# Delete cert-manager CRDs - strip finalizers first
+for crd in $($KUBECTL get crd 2>/dev/null | grep 'cert-manager.io' | awk '{print $1}'); do
+    $KUBECTL patch crd "$crd" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+    $KUBECTL delete crd "$crd" --timeout=10s 2>/dev/null || true
+done
+# Delete cert-manager namespace and all its resources
+if $KUBECTL get namespace cert-manager &>/dev/null; then
+    $KUBECTL delete namespace cert-manager --timeout=60s 2>/dev/null || true
+fi
+# Clean up cluster-scoped cert-manager resources
+$KUBECTL get clusterrole 2>/dev/null | grep 'cert-manager' | awk '{print $1}' | xargs -r $KUBECTL delete clusterrole 2>/dev/null || true
+$KUBECTL get clusterrolebinding 2>/dev/null | grep 'cert-manager' | awk '{print $1}' | xargs -r $KUBECTL delete clusterrolebinding 2>/dev/null || true
+echo "cert-manager cleaned up"
 
 # 6. Remove Prometheus Monitoring Stack
 echo -e "${BLUE}[6/10] Uninstalling Prometheus Monitoring Stack...${NC}"
@@ -176,10 +191,21 @@ fi
 # Clean up Prometheus webhooks and CRDs
 $KUBECTL delete validatingwebhookconfiguration prometheus-monitor-admission 2>/dev/null || true
 $KUBECTL delete mutatingwebhookconfiguration prometheus-monitor-admission 2>/dev/null || true
-$KUBECTL get crd 2>/dev/null | grep 'monitoring.coreos.com' | awk '{print $1}' | xargs -r $KUBECTL delete crd 2>/dev/null || true
+for crd in $($KUBECTL get crd 2>/dev/null | grep 'monitoring.coreos.com' | awk '{print $1}'); do
+    $KUBECTL patch crd "$crd" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+    $KUBECTL delete crd "$crd" --timeout=10s 2>/dev/null || true
+done
 
 # 7. Remove Longhorn
 echo -e "${BLUE}[6/9] Uninstalling Longhorn...${NC}"
+
+# Delete Longhorn webhooks FIRST (critical - orphaned webhooks block all subsequent API calls)
+echo "Removing Longhorn webhooks..."
+$KUBECTL delete validatingwebhookconfiguration longhorn-webhook-validator 2>/dev/null || true
+$KUBECTL delete mutatingwebhookconfiguration longhorn-webhook-mutator 2>/dev/null || true
+# Also try legacy names
+$KUBECTL delete validatingwebhookconfiguration longhorn-admission-webhook 2>/dev/null || true
+$KUBECTL delete mutatingwebhookconfiguration longhorn-admission-webhook 2>/dev/null || true
 
 # Clean up any stuck Helm releases first
 if $KUBECTL get namespace longhorn-system &>/dev/null; then
@@ -188,11 +214,6 @@ if $KUBECTL get namespace longhorn-system &>/dev/null; then
 fi
 
 $HELM uninstall longhorn -n longhorn-system 2>/dev/null || echo "Longhorn not found or already removed"
-
-# Delete Longhorn webhooks first (critical - these block namespace deletion)
-echo "Removing Longhorn webhooks..."
-$KUBECTL delete validatingwebhookconfiguration longhorn-admission-webhook 2>/dev/null || true
-$KUBECTL delete mutatingwebhookconfiguration longhorn-admission-webhook 2>/dev/null || true
 
 # Remove finalizers from Longhorn resources to prevent namespace from hanging
 if $KUBECTL get namespace longhorn-system &>/dev/null; then

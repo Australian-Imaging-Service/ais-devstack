@@ -55,6 +55,28 @@ if ! $KUBECTL get crd certificates.cert-manager.io &>/dev/null; then
     echo "Waiting for cert-manager to be ready..."
     sleep 10
     $KUBECTL wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=180s
+    # Wait for cert-manager webhook to be fully operational (CA bundle injection is async)
+    echo "Waiting for cert-manager webhook to become trusted..."
+    for i in $(seq 1 30); do
+        if $KUBECTL get validatingwebhookconfiguration cert-manager-webhook -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null | grep -q '^[A-Za-z0-9]'; then
+            # Test the webhook with a dry-run
+            if $KUBECTL apply --dry-run=server -f - <<'TESTEOF' 2>/dev/null
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: test-webhook
+  namespace: default
+spec:
+  selfSigned: {}
+TESTEOF
+            then
+                echo "cert-manager webhook is ready"
+                break
+            fi
+        fi
+        echo -n "."
+        sleep 5
+    done
 else
     echo "cert-manager already installed"
 fi
@@ -107,6 +129,12 @@ $KUBECTL patch daemonset spod -n security --type='json' -p="[
 # Wait for spod to be ready
 echo "Waiting for spod to be ready..."
 $KUBECTL wait --for=condition=ready pod -l name=spod -n security --timeout=300s
+
+# Ensure AppArmor CRD exists (Helm may silently skip it during install)
+if ! $KUBECTL get crd apparmorprofiles.security-profiles-operator.x-k8s.io &>/dev/null; then
+    echo -e "${YELLOW}AppArmor CRD not found, applying CRDs manually...${NC}"
+    $KUBECTL apply -f https://raw.githubusercontent.com/Edan-Hamilton/security-profiles-operator/neurodesk/deploy/helm/crds/crds.yaml
+fi
 
 # Apply AppArmor profile
 echo -e "${BLUE}[6/6] Creating AppArmor profile...${NC}"
