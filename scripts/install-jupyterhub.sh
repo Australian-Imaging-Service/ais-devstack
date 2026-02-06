@@ -86,24 +86,38 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
+# Read TLS secret name from XNAT config (JupyterHub shares the same certificate)
+TLS_SECRET=$(grep -A3 "tls:" "$VALUES_FILE" | grep "secretName:" | head -1 | awk '{print $2}')
+TLS_SECRET=${TLS_SECRET:-"xnat-tls"}
+
 echo -e "${BLUE}Configuration:${NC}"
 echo "  Domain: $DOMAIN"
+echo "  TLS Secret: $TLS_SECRET (shared with XNAT)"
 echo ""
 
-# Update JupyterHub values with domain
-echo -e "${BLUE}Updating JupyterHub configuration with domain...${NC}"
+# Update JupyterHub values with domain and TLS
+echo -e "${BLUE}Updating JupyterHub configuration...${NC}"
 
 # Update oauth_callback_url
 sed -i "s|oauth_callback_url: \"https://[^/]*/|oauth_callback_url: \"https://$DOMAIN/|g" "$JUPYTERHUB_VALUES"
 
-# Update ingress hosts
+# Update ingress hosts (under hosts: section)
 sed -i "s|^\([[:space:]]*\)- xnat-test\.ssdsorg\.cloud\.edu\.au|\1- $DOMAIN|g" "$JUPYTERHUB_VALUES"
+sed -i "s|^\([[:space:]]*\)- YOUR_DOMAIN|\1- $DOMAIN|g" "$JUPYTERHUB_VALUES"
 
-# Handle any other domain that might be there (more generic pattern for hosts under ingress)
-# This updates the line that just has the hostname under hosts:
+# Update TLS hosts
+sed -i "/^[[:space:]]*tls:/,/^[[:space:]]*[a-z]/ s/^\([[:space:]]*- \)YOUR_DOMAIN/\1$DOMAIN/" "$JUPYTERHUB_VALUES"
+
+# Update TLS secret name to match XNAT
+sed -i "s|secretName: YOUR_TLS_SECRET.*|secretName: $TLS_SECRET  # Same secret as XNAT (shared certificate)|g" "$JUPYTERHUB_VALUES"
+sed -i "s|secretName: jupyterhub-tls.*|secretName: $TLS_SECRET  # Same secret as XNAT (shared certificate)|g" "$JUPYTERHUB_VALUES"
+
+# Handle any other domain patterns
 sed -i "/^ingress:/,/^[a-z]/ { /hosts:/,/pathType:/ s/^\([[:space:]]*- \)[a-zA-Z0-9.-]*\.edu\.au/\1$DOMAIN/ }" "$JUPYTERHUB_VALUES"
 
-echo -e "${GREEN}JupyterHub values updated with domain: $DOMAIN${NC}"
+echo -e "${GREEN}JupyterHub values updated:${NC}"
+echo "  - Domain: $DOMAIN"
+echo "  - TLS: Using XNAT's certificate ($TLS_SECRET)"
 echo ""
 
 # Confirm installation
@@ -139,8 +153,8 @@ echo "   JupyterHub Installation Complete!"
 echo "==========================================${NC}"
 echo ""
 echo "Access URLs:"
-echo "  XNAT:       http://$DOMAIN"
-echo "  JupyterHub: http://$DOMAIN/hub"
+echo "  XNAT:       https://$DOMAIN"
+echo "  JupyterHub: https://$DOMAIN/hub"
 echo ""
 API_TOKEN=$(grep -A1 'xnat-service:' "$JUPYTERHUB_VALUES" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
 API_TOKEN=${API_TOKEN:-"<check jupyterhub/5-jupyterhub-values.yaml>"}
@@ -148,9 +162,10 @@ API_TOKEN=${API_TOKEN:-"<check jupyterhub/5-jupyterhub-values.yaml>"}
 echo -e "${BLUE}XNAT JupyterHub Plugin Configuration:${NC}"
 echo "  Go to: XNAT -> Administer -> Plugin Settings -> JupyterHub"
 echo ""
-echo "  JupyterHub Host URL:  http://$DOMAIN/"
+echo "  JupyterHub Host URL:  https://$DOMAIN/"
 echo "  JupyterHub API URL:   http://proxy-public.jupyter.svc.cluster.local/hub/api"
 echo "  API Token:            $API_TOKEN"
 echo ""
+echo "  Note: SSL/TLS uses XNAT's certificate (shared domain)"
 echo "  See jupyterhub/XNAT-CONFIGURATION.md for detailed setup instructions"
 echo ""

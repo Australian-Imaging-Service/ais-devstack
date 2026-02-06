@@ -604,13 +604,18 @@ ingress:
   enabled: true
   ingressClassName: nginx
   annotations:
+    # Note: SSL certificate is provisioned by XNAT ingress (shared domain)
+    # JupyterHub uses the same TLS secret - no separate cert-manager annotation needed
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
   hosts:
-    - xnat-test.ssdsorg.cloud.edu.au
+    - YOUR_DOMAIN  # Same domain as XNAT
   pathType: Prefix
-  tls: []
+  tls:
+    - hosts:
+        - YOUR_DOMAIN
+      secretName: YOUR_TLS_SECRET  # Same secret as XNAT (e.g., labtest-tls)
 
 scheduling:
   userScheduler: { enabled: false }
