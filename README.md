@@ -183,50 +183,150 @@ xnat-web:
 
 ### OpenID Connect (OIDC) Authentication
 
-Both XNAT and JupyterHub use OIDC for authentication. You need to register each service with your OIDC provider (e.g., AAF - Australian Access Federation).
+Both XNAT and JupyterHub use OIDC for authentication. Choose **one** provider and configure both services to use it.
 
-#### Step 1: Register OIDC Services
+**Supported Providers:**
+- **Google OIDC** - Recommended for development and testing (easy setup, works worldwide)
+- **AAF** - Australian Access Federation (for Australian research institutions)
 
-Register **two separate OIDC clients** with your provider:
+> **Important:** Both XNAT and JupyterHub must use the same OIDC provider. Users need to exist in both systems with matching usernames.
 
-| Service | Callback URL |
-|---------|--------------|
-| XNAT | `https://your-domain.example.com/openid-login` |
-| JupyterHub | `https://your-domain.example.com/hub/oauth_callback` |
+---
 
-For AAF, register at: https://manager.test.aaf.edu.au/ (test) or https://manager.aaf.edu.au/ (production)
+#### Option A: Google OIDC Setup
 
-#### Step 2: Configure XNAT
+**Step 1: Create Google OAuth Credentials**
 
-Update `manifests/values.yaml` with your XNAT OIDC credentials:
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Navigate to **APIs & Services** > **Credentials**
+4. Click **Create Credentials** > **OAuth client ID**
+5. Select **Web application**
+6. Configure the OAuth client:
+
+   | Field | Value |
+   |-------|-------|
+   | Name | XNAT + JupyterHub |
+   | Authorized JavaScript origins | `https://your-domain.example.com` |
+   | Authorized redirect URIs | `https://your-domain.example.com/openid-login` |
+   | | `https://your-domain.example.com/hub/oauth_callback` |
+
+7. Click **Create** and note down the **Client ID** and **Client Secret**
+
+**Step 2: Configure XNAT for Google**
+
+Update `manifests/values.yaml`:
 
 ```yaml
 xnat-web:
   plugins:
     openid-auth-plugin:
-      - siteUrl: "http://your-domain.example.com"
+      - name: "Google Authentication"
+        provider:
+          id: google
+        enabled: "google"
+        siteUrl: "https://your-domain.example.com"
         openid:
-          aaf:
-            clientId: "your-xnat-client-id"
-            clientSecret: "your-xnat-client-secret"
-            scopes: "openid,profile,email"
+          google:
+            clientId: "your-google-client-id.apps.googleusercontent.com"
+            clientSecret: "your-google-client-secret"
+            # Other settings already configured in template
 ```
 
-#### Step 3: Configure JupyterHub
+**Step 3: Configure JupyterHub for Google**
 
-Update `jupyterhub/5-jupyterhub-values.yaml` (copied from template) with your JupyterHub OIDC credentials:
+Update `jupyterhub/5-jupyterhub-values.yaml`:
 
 ```yaml
 hub:
   config:
     GenericOAuthenticator:
-      client_id: "your-jupyterhub-client-id"
-      client_secret: "your-jupyterhub-client-secret"
+      client_id: "your-google-client-id.apps.googleusercontent.com"
+      client_secret: "your-google-client-secret"
       oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
+      # Google URLs already configured in template
+  extraEnv:
+    OIDC_PROVIDER_PREFIX: "google"  # Ensures username format matches XNAT
 ```
 
-Then upgrade JupyterHub:
+---
+
+#### Option B: AAF Setup (Australian Access Federation)
+
+**Step 1: Register with AAF**
+
+1. Go to [AAF Service Manager](https://manager.aaf.edu.au/) (production) or [Test AAF](https://manager.test.aaf.edu.au/) (testing)
+2. Register **two separate services**:
+
+   | Service | Callback URL |
+   |---------|--------------|
+   | XNAT | `https://your-domain.example.com/openid-login` |
+   | JupyterHub | `https://your-domain.example.com/hub/oauth_callback` |
+
+3. Note down the **Client ID** and **Client Secret** for each service
+
+**Step 2: Configure XNAT for AAF**
+
+Update `manifests/values.yaml` - comment out Google, uncomment AAF:
+
+```yaml
+xnat-web:
+  plugins:
+    openid-auth-plugin:
+      - name: "AAF Authentication"
+        provider:
+          id: aaf
+        enabled: "aaf"
+        siteUrl: "https://your-domain.example.com"
+        openid:
+          # google: ...  (comment out)
+          aaf:
+            accessTokenUri: https://central.aaf.edu.au/providers/op/token
+            userAuthUri: https://central.aaf.edu.au/providers/op/authorize
+            clientId: "your-aaf-xnat-client-id"
+            clientSecret: "your-aaf-xnat-client-secret"
+            scopes: "openid,profile,email"
+            # Other settings already configured in template
+```
+
+**Step 3: Configure JupyterHub for AAF**
+
+Update `jupyterhub/5-jupyterhub-values.yaml` - comment out Google, uncomment AAF:
+
+```yaml
+hub:
+  config:
+    GenericOAuthenticator:
+      # Google settings (comment out)
+      # client_id: ...
+
+      # AAF settings (uncomment)
+      client_id: "your-aaf-jupyterhub-client-id"
+      client_secret: "your-aaf-jupyterhub-client-secret"
+      oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
+      authorize_url: "https://central.aaf.edu.au/providers/op/authorize"
+      token_url: "https://central.aaf.edu.au/providers/op/token"
+      userdata_url: "https://central.aaf.edu.au/providers/op/userinfo"
+      login_service: "AAF"
+      scope: [openid, profile, email, eduperson_principal_name]
+  extraEnv:
+    OIDC_PROVIDER_PREFIX: "aaf"  # Ensures username format matches XNAT
+```
+
+---
+
+#### Apply Configuration Changes
+
+After updating the configuration files:
+
 ```bash
+# Upgrade XNAT
+helm upgrade xnat-web ais/xnat \
+  --namespace ais-xnat \
+  --values manifests/values.yaml \
+  --post-renderer ./manifests/kustomize.sh
+
+# Upgrade JupyterHub
 helm upgrade jupyterhub jupyterhub/jupyterhub -n jupyter \
   --values jupyterhub/5-jupyterhub-values.yaml
 ```
