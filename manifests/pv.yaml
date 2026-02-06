@@ -1,0 +1,65 @@
+# XNAT Persistent Volumes
+# These PVs connect to the in-cluster NFS server for shared storage
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: xnat-nfs
+  annotations:
+    pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  mountOptions:
+    - nfsvers=4.2
+  storageClassName: nfs-csi
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: nfs-server.storage.svc.cluster.local/xnat##
+    volumeAttributes:
+      server: nfs-server.storage.svc.cluster.local
+      share: /xnat
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: xnat-build
+  annotations:
+    pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  mountOptions:
+    - nfsvers=4.2
+  storageClassName: nfs-csi
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: nfs-server.storage.svc.cluster.local/xnat/data/build##
+    volumeAttributes:
+      server: nfs-server.storage.svc.cluster.local
+      share: /xnat/data/build
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: xnat-gpfs
+  annotations:
+    pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  mountOptions:
+    - nfsvers=4.2
+  storageClassName: nfs-csi
+  csi:
+    driver: nfs.csi.k8s.io
+    volumeHandle: nfs-server.storage.svc.cluster.local/gpfs##
+    volumeAttributes:
+      server: nfs-server.storage.svc.cluster.local
+      share: /gpfs

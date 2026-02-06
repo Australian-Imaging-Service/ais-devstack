@@ -1,0 +1,46 @@
+{{- $fullname := include "nfs-server.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: nfs-server
+      role: {{ $fullname }}
+  template:
+    metadata:
+      labels:
+        app: nfs-server
+        role: {{ $fullname }}
+    spec:
+      containers:
+      - name: {{ $fullname }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+          - name: SHARED_DIRECTORY
+            value: "/exports"
+        ports:
+          - name: nfs
+            containerPort: 2049
+          - name: mountd
+            containerPort: 20048
+          - name: rpcbind
+            containerPort: 111
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - mountPath: /exports
+            name: nfs-exports
+      {{- if .Values.nodeSelector }}
+      nodeSelector:
+        {{- with .Values.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      volumes:
+        - name: nfs-exports
+          persistentVolumeClaim:
+            claimName: pv-{{ $fullname }}

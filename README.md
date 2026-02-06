@@ -1,217 +1,438 @@
-# Running XNAT Container Service with JVM remote debug support
+# AIS-XNAT Deployment for k3s
+
+XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Service.
 
 ## Prerequisites
 
-Clone repo with HTTPS
-```
-git clone https://github.com/Australian-Imaging-Service/ais-devstack
-```
-Or SSH
-```
-git clone git@github.com:Australian-Imaging-Service/ais-devstack.git
-```
+- Ubuntu 20.04+ or similar Linux distribution
+- Minimum 4GB RAM, 2 CPU cores
+- 600GB+ storage for NFS server
+- Helm 3.x installed
 
-### Site Setup
-
-Check you have an xnattesting entry in your `hosts` file (`C:\Windows\System32\drivers\etc\hosts` on Windows)
+## Directory Structure
 
 ```
-127.0.0.1 xnattesting.local
+ais-devstack/
+├── README.md                    # This file
+├── manifests/
+│   ├── pv.yaml                  # Persistent Volumes (NFS-backed)
+│   ├── pvc.yaml                 # Persistent Volume Claims
+│   ├── configmap.yaml           # XNAT init script ConfigMap
+│   ├── kustomization.yaml       # Kustomize patches for StatefulSet
+│   ├── kustomize.sh             # Helm post-renderer script
+│   └── values.yaml              # XNAT Helm chart values (domain config)
+├── nfs-server/
+│   └── values.yaml              # NFS server Helm chart values
+├── plugins/
+│   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
+├── jupyterhub/                  # JupyterHub integration (git subtree)
+│   ├── INSTALL.sh               # JupyterHub orchestrator
+│   ├── 5-jupyterhub-values.yaml.template  # JupyterHub config template
+│   └── ...                      # See jupyterhub/README.md
+└── scripts/
+    ├── install.sh               # XNAT install (prompts for JupyterHub)
+    ├── install-jupyterhub.sh    # JupyterHub installation
+    ├── uninstall.sh             # XNAT uninstallation
+    └── uninstall-jupyterhub.sh  # JupyterHub uninstallation
 ```
 
-If using Windows WSL, also add a TCP port proxy that listens on port 80 and forwards connections to WSL port 80.
+## Quick Start
 
-Get WSL IP address for `eth0` in WSL terminal:
+### Install
+
 ```bash
-ip a show dev eth0
+cd /home/ubuntu/ais-devstack
+chmod +x scripts/*.sh manifests/kustomize.sh
+./scripts/install.sh
 ```
 
-Add TCP proxy port in PowerShell admin terminal:
-```powershell
-netsh interface portproxy add v4tov4 listenport=80 listenaddress=0.0.0.0 connectport=80 connectaddress=<eth0_ip>
+### Uninstall
+
+The uninstall script automatically detects whether you're running MicroK8s or k3s:
+
+```bash
+./scripts/uninstall.sh
+```
+
+It will:
+- Remove XNAT and related resources
+- Optionally remove NFS server and CSI driver
+- Optionally remove the entire Kubernetes distribution (MicroK8s or k3s)
+
+## Manual Installation
+
+If you prefer step-by-step installation:
+
+### Step 1: Install k3s
+
+```bash
+curl -sfL https://get.k3s.io | sh -
+
+# Configure kubectl
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown $USER:$USER ~/.kube/config
+```
+
+### Step 2: Install Helm (if not installed)
+
+```bash
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+```
+
+### Step 3: Install NGINX Ingress Controller
+
+k3s comes with Traefik by default, but XNAT requires nginx-specific annotations for large file uploads:
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace \
+  --set controller.publishService.enabled=true
+```
+
+### Step 4: Install NFS CSI Driver
+
+```bash
+helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
+
+helm install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
+  --namespace kube-system \
+  --set kubeletDir=/var/lib/kubelet
+```
+
+### Step 5: Deploy NFS Server
+
+```bash
+kubectl create namespace storage
+
+# Deploy using the nfs-server helm chart
+helm install nfs-server ./nfs-server \
+  --namespace storage \
+  --values nfs-server/values.yaml
+
+# Wait for pod to be ready
+kubectl -n storage get pods -w
+
+# Create required directories
+kubectl -n storage exec deploy/nfs-server -- mkdir -p \
+  /exports/gpfs /exports/xnat/data/build /exports/xnat/plugins
+```
+
+### Step 6: Deploy XNAT
+
+```bash
+# Create namespace
+kubectl create namespace ais-xnat
+
+# Apply storage resources
+kubectl apply -f manifests/pv.yaml
+kubectl apply -f manifests/pvc.yaml
+kubectl apply -f manifests/configmap.yaml
+
+# Add AIS Helm repo
+helm repo add ais https://australian-imaging-service.github.io/charts
+helm repo update
+
+# Install XNAT with kustomize patches
+chmod +x manifests/kustomize.sh
+helm install xnat-web ais/xnat \
+  --namespace ais-xnat \
+  --values manifests/values.yaml \
+  --post-renderer ./manifests/kustomize.sh
+```
+
+### Step 7: Verify Installation
+
+```bash
+# Watch pods start up
+kubectl -n ais-xnat get pods -w
+
+# Port forward to access locally
+kubectl -n ais-xnat port-forward svc/xnat-web 8080:80
+```
+
+Access XNAT at http://localhost:8080 (default: admin/admin)
+
+## Key Differences from MicroK8s
+
+| Component | MicroK8s | k3s |
+|-----------|----------|-----|
+| Kubelet path | `/var/snap/microk8s/common/var/lib/kubelet` | `/var/lib/kubelet` |
+| Default storage class | `microk8s-hostpath` | `local-path` |
+| Default ingress | nginx (addon) | Traefik (requires nginx install) |
+| kubectl | `microk8s kubectl` | `kubectl` |
+| helm | `microk8s helm` | `helm` |
+| Config location | Snap-based | `/etc/rancher/k3s/` |
+
+## Configuration
+
+### Ingress Host
+
+Edit `manifests/values.yaml` to change the ingress hostname:
+
+```yaml
+xnat-web:
+  ingress:
+    hosts:
+      - host: your-domain.example.com
+```
+
+### OpenID Connect (OIDC) Authentication
+
+Both XNAT and JupyterHub use OIDC for authentication. Choose **one** provider and configure both services to use it.
+
+**Supported Providers:**
+- **Google OIDC** - Recommended for development and testing (easy setup, works worldwide)
+- **AAF** - Australian Access Federation (for Australian research institutions)
+
+> **Important:** Both XNAT and JupyterHub must use the same OIDC provider. Users need to exist in both systems with matching usernames.
+
+---
+
+#### Option A: Google OIDC Setup
+
+**Step 1: Create Google OAuth Credentials**
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Navigate to **APIs & Services** > **Credentials**
+4. Click **Create Credentials** > **OAuth client ID**
+5. Select **Web application**
+6. Configure the OAuth client:
+
+   | Field | Value |
+   |-------|-------|
+   | Name | XNAT + JupyterHub |
+   | Authorized JavaScript origins | `https://your-domain.example.com` |
+   | Authorized redirect URIs | `https://your-domain.example.com/openid-login` |
+   | | `https://your-domain.example.com/hub/oauth_callback` |
+
+7. Click **Create** and note down the **Client ID** and **Client Secret**
+
+**Step 2: Configure XNAT for Google**
+
+Update `manifests/values.yaml`:
+
+```yaml
+xnat-web:
+  plugins:
+    openid-auth-plugin:
+      - name: "Google Authentication"
+        provider:
+          id: google
+        enabled: "google"
+        siteUrl: "https://your-domain.example.com"
+        openid:
+          google:
+            clientId: "your-google-client-id.apps.googleusercontent.com"
+            clientSecret: "your-google-client-secret"
+            # Other settings already configured in template
+```
+
+**Step 3: Configure JupyterHub for Google**
+
+Update `jupyterhub/5-jupyterhub-values.yaml`:
+
+```yaml
+hub:
+  config:
+    GenericOAuthenticator:
+      client_id: "your-google-client-id.apps.googleusercontent.com"
+      client_secret: "your-google-client-secret"
+      oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
+      # Google URLs already configured in template
+  extraEnv:
+    OIDC_PROVIDER_PREFIX: "google"  # Ensures username format matches XNAT
 ```
 
 ---
 
-## Installation Options
+#### Option B: AAF Setup (Australian Access Federation)
 
-Choose one of the following Kubernetes distributions:
+**Step 1: Register with AAF**
 
-- [Option A: MicroK8s](#option-a-microk8s)
-- [Option B: k3s](#option-b-k3s)
+1. Go to [AAF Service Manager](https://manager.aaf.edu.au/) (production) or [Test AAF](https://manager.test.aaf.edu.au/) (testing)
+2. Register **two separate services**:
 
----
+   | Service | Callback URL |
+   |---------|--------------|
+   | XNAT | `https://your-domain.example.com/openid-login` |
+   | JupyterHub | `https://your-domain.example.com/hub/oauth_callback` |
 
-### Option A: MicroK8s
+3. Note down the **Client ID** and **Client Secret** for each service
 
-1.  Install microk8s and required addons
+**Step 2: Configure XNAT for AAF**
 
-    ```bash
-    sudo snap install microk8s --classic
-    sudo microk8s start
-    sudo microk8s enable ingress hostpath-storage
-    sudo microk8s status
-    ```
+Update `manifests/values.yaml` - comment out Google, uncomment AAF:
 
-2.  Add helm and kubectl aliases to bashrc
+```yaml
+xnat-web:
+  plugins:
+    openid-auth-plugin:
+      - name: "AAF Authentication"
+        provider:
+          id: aaf
+        enabled: "aaf"
+        siteUrl: "https://your-domain.example.com"
+        openid:
+          # google: ...  (comment out)
+          aaf:
+            accessTokenUri: https://central.aaf.edu.au/providers/op/token
+            userAuthUri: https://central.aaf.edu.au/providers/op/authorize
+            clientId: "your-aaf-xnat-client-id"
+            clientSecret: "your-aaf-xnat-client-secret"
+            scopes: "openid,profile,email"
+            # Other settings already configured in template
+```
 
-    ```bash
-    # go to end ~/.bashrc and add the following entries
-    alias kubectl="microk8s kubectl"
-    alias k="microk8s kubectl"
-    alias helm="microk8s helm"
-    ```
+**Step 3: Configure JupyterHub for AAF**
 
-3.  Add yourself to microk8s group
+Update `jupyterhub/5-jupyterhub-values.yaml` - comment out Google, uncomment AAF:
 
-    ```bash
-    sudo usermod -a -G microk8s $USER
-    ```
+```yaml
+hub:
+  config:
+    GenericOAuthenticator:
+      # Google settings (comment out)
+      # client_id: ...
 
-    Close terminal and reopen to get aliases and group
-
-4.  Install NFS server using helm chart from rcc-portals repo, add required exports
-
-    ```bash
-    kubectl create ns storage
-    helm -n storage install nfs-server rcc-portals/charts/nfs-server \
-      --set persistence.storageClass=microk8s-hostpath \
-      --set persistence.size=1Gi
-    kubectl -n storage exec deploy/nfs-server -- mkdir -p \
-      /exports/xnat/data /exports/xnat/plugins
-    ```
-
-5.  Install the NFS CSI driver
-
-    ```bash
-    helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-    helm repo update
-    helm -n kube-system install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
-      --set kubeletDir=/var/snap/microk8s/common/var/lib/kubelet
-    ```
-
-6.  Create the XNAT namespace
-
-    ```bash
-    kubectl create ns ais-xnat
-    ```
-
-7.  Install XNAT using helm chart from ais repo and kustomize
-
-    ```bash
-    helm repo add ais https://australian-imaging-service.github.io/charts
-    helm repo update
-    helm -n ais-xnat install xnat-web ais/xnat --values values.yaml \
-      --post-renderer ./kustomize-microk8s.sh
-    ```
-
-    Note: The provided `kustomization.yaml` disables XNAT health checks. If you need health checking, remove entries suffixed with `Probe`.
+      # AAF settings (uncomment)
+      client_id: "your-aaf-jupyterhub-client-id"
+      client_secret: "your-aaf-jupyterhub-client-secret"
+      oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
+      authorize_url: "https://central.aaf.edu.au/providers/op/authorize"
+      token_url: "https://central.aaf.edu.au/providers/op/token"
+      userdata_url: "https://central.aaf.edu.au/providers/op/userinfo"
+      login_service: "AAF"
+      scope: [openid, profile, email, eduperson_principal_name]
+  extraEnv:
+    OIDC_PROVIDER_PREFIX: "aaf"  # Ensures username format matches XNAT
+```
 
 ---
 
-### Option B: k3s
+#### Apply Configuration Changes
 
-1.  Install k3s with nginx ingress controller
+After updating the configuration files:
 
-    ```bash
-    # Install k3s without Traefik (we'll use nginx instead)
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik" sh -
-    
-    # Set up kubeconfig for current user
-    mkdir -p ~/.kube
-    sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-    sudo chown $USER:$USER ~/.kube/config
-    chmod 600 ~/.kube/config
-    
-    # Verify k3s is running
-    kubectl get nodes
-    ```
+```bash
+# Upgrade XNAT
+helm upgrade xnat-web ais/xnat \
+  --namespace ais-xnat \
+  --values manifests/values.yaml \
+  --post-renderer ./manifests/kustomize.sh
 
-2.  Install nginx ingress controller
+# Upgrade JupyterHub
+helm upgrade jupyterhub jupyterhub/jupyterhub -n jupyter \
+  --values jupyterhub/5-jupyterhub-values.yaml
+```
 
-    ```bash
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.1/deploy/static/provider/cloud/deploy.yaml
-    
-    # Wait for ingress controller to be ready
-    kubectl wait --namespace ingress-nginx \
-      --for=condition=ready pod \
-      --selector=app.kubernetes.io/component=controller \
-      --timeout=120s
-    ```
+### Storage Size
 
-3.  Add kubectl and helm aliases to bashrc (optional)
+Edit `nfs-server/values.yaml`:
 
-    ```bash
-    # go to end ~/.bashrc and add the following entries
-    alias k="kubectl"
-    ```
+```yaml
+persistence:
+  size: 600Gi  # Adjust as needed
+```
 
-    Close terminal and reopen to get aliases
+## Troubleshooting
 
-4.  Install NFS server using helm chart from rcc-portals repo, add required exports
+### XNAT pod stuck in Init
 
-    ```bash
-    # Add helm repo if not already added
-    helm repo add rcc-portals https://australian-imaging-service.github.io/rcc-portals
-    helm repo update
-    
-    kubectl create ns storage
-    helm -n storage install nfs-server rcc-portals/charts/nfs-server \
-      --set persistence.storageClass=local-path \
-      --set persistence.size=1Gi
-    kubectl -n storage exec deploy/nfs-server -- mkdir -p \
-      /exports/xnat/data /exports/xnat/plugins
-    ```
+```bash
+kubectl -n ais-xnat describe pod xnat-web-0
+kubectl -n ais-xnat logs xnat-web-0 -c home-init
+```
 
-5.  Install the NFS CSI driver
+### NFS connection issues
 
-    ```bash
-    helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts
-    helm repo update
-    helm -n kube-system install csi-driver-nfs csi-driver-nfs/csi-driver-nfs
-    ```
+```bash
+# Check NFS server is running
+kubectl -n storage get pods
+kubectl -n storage logs deploy/nfs-server
 
-6.  Create the XNAT namespace
+# Check PV/PVC binding
+kubectl get pv
+kubectl -n ais-xnat get pvc
+```
 
-    ```bash
-    kubectl create ns ais-xnat
-    ```
+### Database issues
 
-7.  Install XNAT using helm chart from ais repo and kustomize
+```bash
+kubectl -n ais-xnat logs xnat-web-0-postgresql-0
+```
 
-    ```bash
-    helm repo add ais https://australian-imaging-service.github.io/charts
-    helm repo update
-    helm -n ais-xnat install xnat-web ais/xnat --values values.yaml \
-      --post-renderer ./kustomize-k3s.sh
-    ```
+## Plugins
 
-    Note: The provided `kustomization.yaml` disables XNAT health checks. If you need health checking, remove entries suffixed with `Probe`.
+Plugins in the `plugins/` directory are automatically copied to the NFS server during installation.
 
----
+**Pre-installed plugins:**
+- `container-service-3.7.2-uq-fat.jar` - Container service plugin
 
-## Common Configuration
+**To add more plugins:**
 
-1.  Configure initial XNAT Site Setup
+1. Place JAR files in `plugins/` before running install, OR
+2. Copy manually after installation:
 
-    | Setting      | Value                     |
-    | ---          | ---                       |
-    | Site URL     | http://xnattesting.local/ |
-    | Enable SMTP? | Disabled                  |
+```bash
+# Copy plugin jar to NFS server
+kubectl -n storage cp my-plugin.jar \
+  $(kubectl -n storage get pods -l app=nfs-server -o name | cut -d/ -f2):/exports/xnat/plugins/
 
-2.  Configure Container Service plugin Compute Backend
+# Restart XNAT to load new plugins
+kubectl -n ais-xnat rollout restart statefulset xnat-web
+```
 
-    | Setting                                             | Value                      |
-    | ---                                                 | ---                        |
-    | Host Name                                           | pipelines                  |
-    | Type                                                | Kubernetes                 |
-    | Automatically clean up containers?                  | ON (OFF if debugging)      |
-    | PVC Setup                                           | Separate Archive and Build |
-    | Archive Directory PVC Name Build Directory PVC Name | pv-xnat-archive            |
-    | Build Directory PVC Name                            | pv-xnat-build              |
+## JupyterHub Integration
 
-3.  Add dcm2niix command under Images & Commands using [command.json](https://github.com/NrgXnat/docker-images/blob/master/dcm2niix/command.json)
+JupyterHub provides interactive Jupyter notebooks integrated with XNAT. The `jupyterhub/` directory contains the JupyterHub deployment as a git subtree from [ais-jupyterhub](https://github.com/Australian-Imaging-Service/ais-jupyterhub).
 
-4.  Enable dcm2niix command under Command Configurations
+### Install JupyterHub
 
-5.  Create test projects proj\_1 AND proj\_2, open project settings and set dcm2niix command to Enabled
+**Option 1:** During XNAT installation, answer "y" when prompted:
+```
+Install JupyterHub? (y/N): y
+```
+
+**Option 2:** Install separately after XNAT is running:
+```bash
+./scripts/install-jupyterhub.sh
+```
+
+The install script automatically reads the domain from `manifests/values.yaml` and configures JupyterHub to use the same domain.
+
+### Uninstall JupyterHub
+
+```bash
+./scripts/uninstall-jupyterhub.sh
+```
+
+### Update JupyterHub from Upstream
+
+The `jupyterhub/` directory is a git subtree. To pull updates from the upstream ais-jupyterhub repository:
+
+```bash
+git subtree pull --prefix=jupyterhub \
+  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
+  Development_AB --squash
+```
+
+To push local changes back to upstream (if you have write access):
+
+```bash
+git subtree push --prefix=jupyterhub \
+  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
+  Development_AB
+```
+
+### JupyterHub Documentation
+
+See the following files in `jupyterhub/` for more details:
+- `README.md` - Architecture overview
+- `XNAT-CONFIGURATION.md` - XNAT plugin setup
+- `TROUBLESHOOTING.md` - Common issues and solutions

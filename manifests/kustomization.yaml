@@ -1,0 +1,76 @@
+# Kustomization for XNAT StatefulSet patches
+# Adds custom NFS volume mounts for archive, prearchive, build, and plugins
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - all.yaml
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: xnat-web
+      spec:
+        template:
+          spec:
+            containers:
+              - name: xnat-web
+                volumeMounts:
+                  - $patch: delete
+                    mountPath: /data/xnat/archive
+                  - mountPath: /data/xnat/prearchive
+                    name: xnat-nfs
+                    subPath: data/prearchive
+                  - mountPath: /data/xnat/archive/proj_1
+                    name: xnat-gpfs
+                    subPath: uq01/pool01/proj_1/xnat
+                  - mountPath: /data/xnat/archive/proj_2
+                    name: xnat-gpfs
+                    subPath: uq02/pool02/proj_2/xnat
+                  - mountPath: /data/xnat/build
+                    name: xnat-build
+                  - mountPath: /usr/local/share/xnat/plugins
+                    name: xnat-nfs
+                    readOnly: true
+                    subPath: plugins
+                  - mountPath: /data/xnat/archive/CONTAINER_EXEC
+                    name: xnat-nfs
+                    subPath: data/CONTAINER_EXEC
+                  - mountPath: /usr/local/bin/init.sh
+                    name: init
+                    readOnly: true
+                    subPath: init.sh
+            initContainers:
+              - name: home-init
+                command:
+                  - /usr/local/bin/init.sh
+                volumeMounts:
+                  - mountPath: /usr/local/share/xnat/plugins
+                    name: xnat-nfs
+                    readOnly: true
+                    subPath: plugins
+                  - mountPath: /usr/local/bin/init.sh
+                    name: init
+                    readOnly: true
+                    subPath: init.sh
+            volumes:
+              - $patch: delete
+                name: archive
+              - $patch: delete
+                name: prearchive
+              - name: xnat-nfs
+                persistentVolumeClaim:
+                  claimName: pv-xnat-nfs
+              - name: xnat-gpfs
+                persistentVolumeClaim:
+                  claimName: pv-xnat-gpfs
+              - name: xnat-build
+                persistentVolumeClaim:
+                  claimName: pv-xnat-build
+              - name: init
+                configMap:
+                  name: xnat-web-init
+                  defaultMode: 0555
+                  items:
+                    - key: init.sh
+                      path: init.sh

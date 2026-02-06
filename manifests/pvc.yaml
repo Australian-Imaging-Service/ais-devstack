@@ -1,0 +1,44 @@
+# XNAT Persistent Volume Claims
+# These PVCs bind to the NFS-backed PVs defined in pv.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pv-xnat-nfs
+  namespace: ais-xnat
+spec:
+  storageClassName: nfs-csi
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: xnat-nfs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pv-xnat-gpfs
+  namespace: ais-xnat
+spec:
+  storageClassName: nfs-csi
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: xnat-gpfs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pv-xnat-build
+  namespace: ais-xnat
+spec:
+  storageClassName: nfs-csi
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: xnat-build
