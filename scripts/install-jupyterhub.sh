@@ -12,7 +12,7 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
-JUPYTERHUB_DIR="$BASE_DIR/hub"
+JUPYTERHUB_DIR="$BASE_DIR/jupyterhub"
 VALUES_FILE="$BASE_DIR/manifests/values.yaml"
 JUPYTERHUB_VALUES_TEMPLATE="$JUPYTERHUB_DIR/5-jupyterhub-values.yaml.template"
 JUPYTERHUB_VALUES="$JUPYTERHUB_DIR/5-jupyterhub-values.yaml"
