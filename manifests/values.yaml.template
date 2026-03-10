@@ -70,7 +70,7 @@ xnat-web:
     openid-auth-plugin:
       - name: "OpenID Authentication Provider"
         provider:
-          id: aaf
+          id: stanford
         auth:
           method: openid
         auto:
@@ -78,26 +78,26 @@ xnat-web:
           verified: true
         visible: true
         disableUsernamePasswordLogin: false
-        enabled: "aaf"
+        enabled: "stanford"
         preEstablishedRedirUri: "/openid-login"
         siteUrl: "https://xnat-test.ssdsorg.cloud.edu.au"
         type: openid
         openid:
-          aaf:
-            accessTokenUri: https://central.test.aaf.edu.au/providers/op/token
-            userAuthUri: https://central.test.aaf.edu.au/providers/op/authorize
-            clientId: "d93e2fac-dee7-4a1e-92ba-07393a531683"
-            clientSecret: "H6aSysZWmqLEqvyNP9wfpcx9vSKxc961Xt7hcLORLYHz0uHNKLC1e0VjbdZoyMJ9mWHoQSiAbNSGqXu8UoRj8OTjZG0N1nBsym7QL5KlzeQ8v775eH8EdLl7LU"
+          stanford:
+            accessTokenUri: https://login.stanford.edu/idp/profile/oidc/token
+            userAuthUri: https://login.stanford.edu/idp/profile/oidc/authorize
+            clientId: "STANFORD_CLIENT_ID"
+            clientSecret: "STANFORD_CLIENT_SECRET"
             scopes: "openid,profile,email"
-            link: '<p>To sign-in using your AAF credentials, please click on the button below.</p><p><a href="/openid-login?providerId=aaf"><img src="/images/aaf_service_223x54.png" /></a></p>'
+            link: '<p>To sign-in using your Stanford credentials, please click on the button below.</p><p><a href="/openid-login?providerId=stanford">Login with Stanford (SUNet ID)</a></p>'
             shouldFilterEmailDomains: true
-            allowedEmailDomains: "uq.edu.au"
+            allowedEmailDomains: "stanford.edu"
             forceUserCreate: true
             userAutoEnabled: true
             userAutoVerified: true
             emailProperty: email
-            givenNameProperty: name
-            familyNameProperty: deliberately_unknown_property
+            givenNameProperty: given_name
+            familyNameProperty: family_name
 
   probes:
     startup:
@@ -108,4 +108,4 @@ xnat-web:
     readiness:
       periodSeconds: 20
 
-  timezone: Australia/Brisbane
+  timezone: America/Los_Angeles

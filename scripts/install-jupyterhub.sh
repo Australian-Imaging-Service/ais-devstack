@@ -23,6 +23,9 @@ echo "   JupyterHub Installation"
 echo "=========================================="
 echo -e "${NC}"
 
+# Ensure kubeconfig is available (k3s default requires root)
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+
 # Check prerequisites
 echo -e "${BLUE}[Pre-flight Checks]${NC}"
 
