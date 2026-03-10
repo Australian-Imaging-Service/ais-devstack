@@ -51,7 +51,7 @@ check_status() {
 }
 
 # Step 1: Install k3s (if not already installed)
-echo -e "${BLUE}[Step 1/9] Installing k3s...${NC}"
+echo -e "${BLUE}[Step 1/10] Installing k3s...${NC}"
 if command -v kubectl &> /dev/null && kubectl get nodes &> /dev/null; then
     echo -e "${GREEN}k3s is already running${NC}"
 else
@@ -79,7 +79,7 @@ else
 fi
 
 # Step 2: Install Helm (if not already installed)
-echo -e "${BLUE}[Step 2/9] Installing Helm...${NC}"
+echo -e "${BLUE}[Step 2/10] Installing Helm...${NC}"
 if command -v helm &> /dev/null; then
     echo -e "${GREEN}Helm is already installed${NC}"
 else
@@ -143,7 +143,7 @@ if [[ "$modify_config" =~ ^[Yy]$ ]]; then
     NEW_HOST=${NEW_HOST:-$CURRENT_HOST}
 
     # Site URL
-    DEFAULT_SITE_URL="http://$NEW_HOST"
+    DEFAULT_SITE_URL="https://$NEW_HOST"
     read -p "Site URL [$DEFAULT_SITE_URL]: " NEW_SITE_URL
     NEW_SITE_URL=${NEW_SITE_URL:-$DEFAULT_SITE_URL}
 
@@ -170,9 +170,10 @@ if [[ "$modify_config" =~ ^[Yy]$ ]]; then
         echo "  Updated site URL to: $NEW_SITE_URL"
     fi
 
-    # Update values.yaml - DB Password
+    # Update values.yaml - DB Password (both global.postgresql.auth.password and xnat-web.postgresql.postgresqlPassword)
     if [ "$NEW_DB_PASSWORD" != "$CURRENT_DB_PASSWORD" ]; then
         sed -i "s/password: $CURRENT_DB_PASSWORD/password: $NEW_DB_PASSWORD/g" "$VALUES_FILE"
+        sed -i "s/postgresqlPassword: $CURRENT_DB_PASSWORD/postgresqlPassword: $NEW_DB_PASSWORD/g" "$VALUES_FILE"
         echo "  Updated DB password"
     fi
 
@@ -194,7 +195,7 @@ fi
 echo ""
 
 # Step 3: Install NGINX Ingress Controller
-echo -e "${BLUE}[Step 3/9] Installing NGINX Ingress Controller...${NC}"
+echo -e "${BLUE}[Step 3/10] Installing NGINX Ingress Controller...${NC}"
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx 2>/dev/null || true
 helm repo update
 
@@ -210,8 +211,42 @@ echo "Waiting for ingress controller pod..."
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=controller -n ingress-nginx --timeout=300s
 check_status $?
 
-# Step 4: Install NFS CSI Driver
-echo -e "${BLUE}[Step 4/9] Installing NFS CSI Driver...${NC}"
+# Step 4: Install cert-manager for TLS certificates
+echo -e "${BLUE}[Step 4/10] Installing cert-manager...${NC}"
+helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+helm repo update
+
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set crds.enabled=true
+
+echo "Waiting for cert-manager pods..."
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+check_status $?
+
+# Create Let's Encrypt ClusterIssuer
+echo "Creating Let's Encrypt ClusterIssuer..."
+kubectl apply -f - <<'ISSUER_EOF'
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@neurodesk.org
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+ISSUER_EOF
+check_status $?
+
+# Step 5: Install NFS CSI Driver
+echo -e "${BLUE}[Step 5/10] Installing NFS CSI Driver...${NC}"
 helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts 2>/dev/null || true
 helm repo update
 
@@ -226,7 +261,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=csi-driver-nfs 
 check_status $?
 
 # Step 5: Create storage namespace and install NFS server
-echo -e "${BLUE}[Step 5/9] Setting up NFS Server...${NC}"
+echo -e "${BLUE}[Step 6/10] Setting up NFS Server...${NC}"
 kubectl create namespace storage 2>/dev/null || echo "Namespace 'storage' already exists"
 
 # Check if nfs-server helm chart exists locally
@@ -268,25 +303,25 @@ else
 fi
 
 # Step 6: Create XNAT namespace
-echo -e "${BLUE}[Step 6/9] Creating XNAT namespace...${NC}"
+echo -e "${BLUE}[Step 7/10] Creating XNAT namespace...${NC}"
 kubectl create namespace ais-xnat 2>/dev/null || echo "Namespace 'ais-xnat' already exists"
 check_status $?
 
 # Step 7: Apply PVs, PVCs, and ConfigMap
-echo -e "${BLUE}[Step 7/9] Applying Kubernetes manifests...${NC}"
+echo -e "${BLUE}[Step 8/10] Applying Kubernetes manifests...${NC}"
 kubectl apply -f "$BASE_DIR/manifests/pv.yaml"
 kubectl apply -f "$BASE_DIR/manifests/pvc.yaml"
 kubectl apply -f "$BASE_DIR/manifests/configmap.yaml"
 check_status $?
 
 # Step 8: Add AIS Helm repo
-echo -e "${BLUE}[Step 8/9] Adding AIS Helm repository...${NC}"
+echo -e "${BLUE}[Step 9/10] Adding AIS Helm repository...${NC}"
 helm repo add ais https://australian-imaging-service.github.io/charts 2>/dev/null || true
 helm repo update
 check_status $?
 
 # Step 9: Install XNAT
-echo -e "${BLUE}[Step 9/9] Installing XNAT...${NC}"
+echo -e "${BLUE}[Step 10/10] Installing XNAT...${NC}"
 chmod +x "$BASE_DIR/manifests/kustomize.sh"
 helm upgrade --install xnat-web ais/xnat \
   --namespace ais-xnat \
