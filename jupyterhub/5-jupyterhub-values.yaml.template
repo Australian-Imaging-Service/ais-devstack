@@ -115,7 +115,7 @@ hub:
     JUPYTERHUB_CRYPT_KEY_HEX: "62c5252a18d4c48ea3b6ca199f501c439a58be3521d01f0055518a1d2a46c3fe"
     XNAT_HOST: "xnat-web.ais-xnat.svc.cluster.local"
     XNAT_USER: "admin"
-    XNAT_PASSWORD: "admin"
+    XNAT_PASSWORD: "hIvzy1-wyssit-durtep"
     # Set to 'google' or 'aaf' to match your OIDC provider
     # This determines the username prefix (google_{sub} or aaf_{sub})
     OIDC_PROVIDER_PREFIX: "google"
