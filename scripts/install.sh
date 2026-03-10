@@ -62,20 +62,28 @@ else
     # Wait for k3s to be ready
     echo "Waiting for k3s to start..."
     sleep 10
+fi
 
-    # Setup kubeconfig
+# Setup kubeconfig (always ensure it's available for non-root kubectl access)
+if [ ! -f ~/.kube/config ] || ! kubectl get nodes &> /dev/null; then
+    echo "Setting up kubeconfig for non-root access..."
     mkdir -p ~/.kube
     sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
     sudo chown $USER:$USER ~/.kube/config
-    export KUBECONFIG=~/.kube/config
+fi
+export KUBECONFIG=~/.kube/config
 
-    # Verify k3s is running
-    if kubectl get nodes &> /dev/null; then
-        echo -e "${GREEN}k3s installed and running (Traefik disabled)${NC}"
-    else
-        echo -e "${RED}k3s installation failed${NC}"
-        exit 1
-    fi
+# Persist KUBECONFIG so it's available in future shell sessions
+if ! grep -q 'KUBECONFIG=.*/.kube/config' ~/.bashrc 2>/dev/null; then
+    echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc
+fi
+
+# Verify k3s is running
+if kubectl get nodes &> /dev/null; then
+    echo -e "${GREEN}k3s installed and running (Traefik disabled)${NC}"
+else
+    echo -e "${RED}k3s installation or kubeconfig setup failed${NC}"
+    exit 1
 fi
 
 # Step 2: Install Helm (if not already installed)
@@ -124,12 +132,16 @@ CURRENT_HOST=$(grep -A1 "hosts:" "$VALUES_FILE" | grep "host:" | head -1 | awk '
 CURRENT_SITE_URL=$(grep "siteUrl:" "$VALUES_FILE" | head -1 | sed 's/.*siteUrl: *"\(.*\)"/\1/')
 CURRENT_DB_PASSWORD=$(grep -A5 "postgresql:" "$VALUES_FILE" | grep "password:" | head -1 | awk '{print $2}')
 CURRENT_NFS_SIZE=$(grep "size:" "$NFS_VALUES_FILE" | awk '{print $2}')
+CURRENT_OIDC_CLIENT_ID=$(grep "clientId:" "$VALUES_FILE" | head -1 | sed 's/.*clientId: *"\(.*\)"/\1/')
+CURRENT_OIDC_CLIENT_SECRET=$(grep "clientSecret:" "$VALUES_FILE" | head -1 | sed 's/.*clientSecret: *"\(.*\)"/\1/')
 
 echo -e "${YELLOW}Current Configuration:${NC}"
-echo "  1. Ingress Host:     $CURRENT_HOST"
-echo "  2. Site URL:         $CURRENT_SITE_URL"
-echo "  3. DB Password:      $CURRENT_DB_PASSWORD"
-echo "  4. NFS Storage Size: $CURRENT_NFS_SIZE"
+echo "  1. Ingress Host:          $CURRENT_HOST"
+echo "  2. Site URL:              $CURRENT_SITE_URL"
+echo "  3. DB Password:           $CURRENT_DB_PASSWORD"
+echo "  4. NFS Storage Size:      $CURRENT_NFS_SIZE"
+echo "  5. Stanford OIDC Client:  $CURRENT_OIDC_CLIENT_ID"
+echo "  6. Stanford OIDC Secret:  ${CURRENT_OIDC_CLIENT_SECRET:0:8}..."
 echo ""
 
 read -p "Do you want to modify these settings? (y/N): " modify_config
@@ -154,6 +166,14 @@ if [[ "$modify_config" =~ ^[Yy]$ ]]; then
     # NFS Size
     read -p "NFS Storage Size [$CURRENT_NFS_SIZE]: " NEW_NFS_SIZE
     NEW_NFS_SIZE=${NEW_NFS_SIZE:-$CURRENT_NFS_SIZE}
+
+    # Stanford OIDC Client ID
+    read -p "Stanford OIDC Client ID [$CURRENT_OIDC_CLIENT_ID]: " NEW_OIDC_CLIENT_ID
+    NEW_OIDC_CLIENT_ID=${NEW_OIDC_CLIENT_ID:-$CURRENT_OIDC_CLIENT_ID}
+
+    # Stanford OIDC Client Secret
+    read -p "Stanford OIDC Client Secret [$CURRENT_OIDC_CLIENT_SECRET]: " NEW_OIDC_CLIENT_SECRET
+    NEW_OIDC_CLIENT_SECRET=${NEW_OIDC_CLIENT_SECRET:-$CURRENT_OIDC_CLIENT_SECRET}
 
     echo ""
     echo -e "${BLUE}Updating configuration files...${NC}"
@@ -181,6 +201,18 @@ if [[ "$modify_config" =~ ^[Yy]$ ]]; then
     if [ "$NEW_NFS_SIZE" != "$CURRENT_NFS_SIZE" ]; then
         sed -i "s/size: $CURRENT_NFS_SIZE/size: $NEW_NFS_SIZE/g" "$NFS_VALUES_FILE"
         echo "  Updated NFS storage size to: $NEW_NFS_SIZE"
+    fi
+
+    # Update values.yaml - Stanford OIDC Client ID
+    if [ "$NEW_OIDC_CLIENT_ID" != "$CURRENT_OIDC_CLIENT_ID" ]; then
+        sed -i "s|clientId: \"$CURRENT_OIDC_CLIENT_ID\"|clientId: \"$NEW_OIDC_CLIENT_ID\"|g" "$VALUES_FILE"
+        echo "  Updated Stanford OIDC Client ID"
+    fi
+
+    # Update values.yaml - Stanford OIDC Client Secret
+    if [ "$NEW_OIDC_CLIENT_SECRET" != "$CURRENT_OIDC_CLIENT_SECRET" ]; then
+        sed -i "s|clientSecret: \"$CURRENT_OIDC_CLIENT_SECRET\"|clientSecret: \"$NEW_OIDC_CLIENT_SECRET\"|g" "$VALUES_FILE"
+        echo "  Updated Stanford OIDC Client Secret"
     fi
 
     echo -e "${GREEN}Configuration updated${NC}"

@@ -5,13 +5,16 @@ echo "=========================================="
 echo "Installing XNAT JupyterHub Plugin v1.3.3"
 echo "=========================================="
 
+# Ensure kubeconfig is available (k3s default requires root)
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+
 # Get XNAT plugin JAR (v1.3.3)
 echo "[1/4] Downloading plugin..."
-wget https://github.com/NrgXnat/xnat-jupyterhub-plugin/releases/download/v1.3.3/xnat-jupyterhub-plugin-1.3.3.jar
+wget -q https://github.com/NrgXnat/xnat-jupyterhub-plugin/releases/download/v1.3.3/xnat-jupyterhub-plugin-1.3.3.jar
 
 # Get NFS server pod name dynamically
 echo "[2/4] Finding NFS server pod..."
-NFS_POD=$( kubectl -n storage get pods -l role=nfs-server -o jsonpath='{.items[0].metadata.name}')
+NFS_POD=$(kubectl -n storage get pods -l role=nfs-server -o jsonpath='{.items[0].metadata.name}')
 echo "Found NFS pod: $NFS_POD"
 
 # Copy to XNAT plugins directory
