@@ -150,6 +150,20 @@ if [[ ! "$install_plugin" =~ ^[Nn]$ ]]; then
     "$JUPYTERHUB_DIR/0-xnat-jupyter-plugin.sh"
 fi
 
+# Configure XNAT JupyterHub plugin via REST API
+echo ""
+echo -e "${BLUE}=========================================="
+echo "Configure XNAT JupyterHub Plugin"
+echo "==========================================${NC}"
+echo ""
+echo "This will configure the JupyterHub plugin settings in XNAT via REST API."
+echo -e "${YELLOW}Note: You need the XNAT admin password (set during XNAT setup wizard)${NC}"
+read -p "Configure XNAT JupyterHub plugin now? (Y/n): " configure_plugin
+if [[ ! "$configure_plugin" =~ ^[Nn]$ ]]; then
+    chmod +x "$JUPYTERHUB_DIR/1-configure-xnat-jupyterhub.sh"
+    "$JUPYTERHUB_DIR/1-configure-xnat-jupyterhub.sh"
+fi
+
 echo ""
 echo -e "${GREEN}=========================================="
 echo "   JupyterHub Installation Complete!"
@@ -158,17 +172,4 @@ echo ""
 echo "Access URLs:"
 echo "  XNAT:       https://$DOMAIN"
 echo "  JupyterHub: https://$DOMAIN/hub"
-echo ""
-API_TOKEN=$(grep -A1 'xnat-service:' "$JUPYTERHUB_VALUES" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
-API_TOKEN=${API_TOKEN:-"<check jupyterhub/5-jupyterhub-values.yaml>"}
-
-echo -e "${BLUE}XNAT JupyterHub Plugin Configuration:${NC}"
-echo "  Go to: XNAT -> Administer -> Plugin Settings -> JupyterHub"
-echo ""
-echo "  JupyterHub Host URL:  https://$DOMAIN/"
-echo "  JupyterHub API URL:   http://proxy-public.jupyter.svc.cluster.local/hub/api"
-echo "  API Token:            $API_TOKEN"
-echo ""
-echo "  Note: SSL/TLS uses XNAT's certificate (shared domain)"
-echo "  See jupyterhub/XNAT-CONFIGURATION.md for detailed setup instructions"
 echo ""
