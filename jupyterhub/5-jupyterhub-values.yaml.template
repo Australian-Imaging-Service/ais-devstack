@@ -24,11 +24,11 @@
 # ===============================================================================================================================
 
 hub:
-  baseUrl: /
+  baseUrl: /jupyter
   config:
     JupyterHub:
       authenticator_class: generic-oauth
-      base_url: /
+      base_url: /jupyter
       log_level: INFO
       allow_named_servers: true  # Enable multiple servers per user (XNAT uses named servers with timestamps)
       named_server_limit_per_user: 1

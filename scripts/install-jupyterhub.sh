@@ -90,7 +90,7 @@ if [ -z "$DOMAIN" ]; then
 fi
 
 # Read TLS secret name from XNAT config (JupyterHub shares the same certificate)
-TLS_SECRET=$(grep -A3 "tls:" "$VALUES_FILE" | grep "secretName:" | head -1 | awk '{print $2}')
+TLS_SECRET=$(grep "secretName:" "$VALUES_FILE" | head -1 | sed 's/.*secretName: *//' | tr -d ' ')
 TLS_SECRET=${TLS_SECRET:-"xnat-tls"}
 
 echo -e "${BLUE}Configuration:${NC}"
