@@ -87,12 +87,12 @@ echo -e "${BLUE}[2/5] Reading configuration...${NC}"
 
 # Get JupyterHub service token from values file
 if [ -f "$JUPYTERHUB_VALUES" ]; then
-    JUPYTERHUB_TOKEN=$(grep -A1 'xnat-service:' "$JUPYTERHUB_VALUES" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
+    JUPYTERHUB_TOKEN=$(grep -A2 'xnat-service:' "$JUPYTERHUB_VALUES" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
 fi
 
 # Fall back to template
 if [ -z "$JUPYTERHUB_TOKEN" ] && [ -f "$SCRIPT_DIR/5-jupyterhub-values.yaml.template" ]; then
-    JUPYTERHUB_TOKEN=$(grep -A1 'xnat-service:' "$SCRIPT_DIR/5-jupyterhub-values.yaml.template" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
+    JUPYTERHUB_TOKEN=$(grep -A2 'xnat-service:' "$SCRIPT_DIR/5-jupyterhub-values.yaml.template" 2>/dev/null | grep 'apiToken:' | awk -F'"' '{print $2}')
 fi
 
 if [ -z "$JUPYTERHUB_TOKEN" ]; then
@@ -235,18 +235,27 @@ fi
 echo ""
 echo -e "${BLUE}[5/5] Updating JupyterHub pre-spawn hook credentials...${NC}"
 
+# Update password in values file (or template if values doesn't exist yet)
+PASS_FILE=""
 if [ -f "$JUPYTERHUB_VALUES" ]; then
-    # Update the XNAT_PASSWORD in the JupyterHub values file if it differs
-    CURRENT_XNAT_PASS=$(grep 'XNAT_PASSWORD:' "$JUPYTERHUB_VALUES" | head -1 | awk -F'"' '{print $2}')
+    PASS_FILE="$JUPYTERHUB_VALUES"
+elif [ -f "$SCRIPT_DIR/5-jupyterhub-values.yaml.template" ]; then
+    PASS_FILE="$SCRIPT_DIR/5-jupyterhub-values.yaml.template"
+fi
+
+if [ -n "$PASS_FILE" ]; then
+    CURRENT_XNAT_PASS=$(grep 'XNAT_PASSWORD:' "$PASS_FILE" | head -1 | awk -F'"' '{print $2}')
     if [ "$CURRENT_XNAT_PASS" != "$ADMIN_PASSWORD" ]; then
-        sed -i "s|XNAT_PASSWORD: \"${CURRENT_XNAT_PASS}\"|XNAT_PASSWORD: \"${ADMIN_PASSWORD}\"|" "$JUPYTERHUB_VALUES"
-        echo -e "${GREEN}Updated XNAT_PASSWORD in JupyterHub values${NC}"
-        echo -e "${YELLOW}Note: Run 'helm upgrade' to apply the new password to JupyterHub${NC}"
+        sed -i "s|XNAT_PASSWORD: \"${CURRENT_XNAT_PASS}\"|XNAT_PASSWORD: \"${ADMIN_PASSWORD}\"|" "$PASS_FILE"
+        echo -e "${GREEN}Updated XNAT_PASSWORD in $(basename "$PASS_FILE")${NC}"
+        if [ "$PASS_FILE" = "$JUPYTERHUB_VALUES" ]; then
+            echo -e "${YELLOW}Note: Run 'helm upgrade' to apply the new password to JupyterHub${NC}"
+        fi
     else
         echo -e "${GREEN}XNAT_PASSWORD already matches${NC}"
     fi
 else
-    echo -e "${YELLOW}JupyterHub values file not found at $JUPYTERHUB_VALUES${NC}"
+    echo -e "${YELLOW}No JupyterHub values file found${NC}"
     echo "  The pre_spawn_hook uses XNAT_PASSWORD to call the XNAT API."
     echo "  Ensure it matches the admin password."
 fi
