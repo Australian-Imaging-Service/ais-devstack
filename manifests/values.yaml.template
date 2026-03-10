@@ -22,6 +22,7 @@ xnat-web:
   ingress:
     enabled: true
     annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
       nginx.ingress.kubernetes.io/proxy-body-size: 12g
       nginx.ingress.kubernetes.io/proxy-buffer-size: 32k
       nginx.ingress.kubernetes.io/proxy-buffering: "off"
@@ -32,6 +33,10 @@ xnat-web:
     ingressClassName: nginx
     hosts:
       - host: xnat-test.ssdsorg.cloud.edu.au
+    tls:
+      - secretName: xnat-tls
+        hosts:
+          - xnat-test.ssdsorg.cloud.edu.au
 
   resources:
     requests:
@@ -75,7 +80,7 @@ xnat-web:
         disableUsernamePasswordLogin: false
         enabled: "aaf"
         preEstablishedRedirUri: "/openid-login"
-        siteUrl: "http://xnat-test.ssdsorg.cloud.edu.au"
+        siteUrl: "https://xnat-test.ssdsorg.cloud.edu.au"
         type: openid
         openid:
           aaf:
