@@ -1,74 +1,137 @@
 # XNAT JupyterHub Plugin Configuration Guide
 
+## Automated Setup
+
+Most configuration steps can be run automatically:
+
+```bash
+# Install plugin JAR and restart XNAT
+./jupyterhub/0-xnat-jupyter-plugin.sh
+
+# Configure plugin preferences, compute environment, and credentials
+./jupyterhub/1-configure-xnat-jupyterhub.sh --password <admin_password>
+```
+
+The configuration script sets:
+- JupyterHub API URL and service token
+- Start/stop timeouts
+- NeuroDesk compute environment image
+- Path translation prefixes
+- XNAT admin password in JupyterHub values
+
 ## Prerequisites
 - JupyterHub installed and running
-- XNAT JupyterHub plugin installed
+- XNAT JupyterHub plugin installed (0-xnat-jupyter-plugin.sh)
+- XNAT admin password (set during XNAT setup wizard)
 
-## Step 1: Access XNAT Admin Interface
+## Manual Setup (if needed)
 
-1. Login to XNAT as admin: http://xnat-test.ssdsorg.cloud.edu.au
+### Step 1: Access XNAT Admin Interface
+
+1. Login to XNAT as admin
 2. Navigate to: **Administer** → **Plugin Settings** → **JupyterHub**
 
-## Step 2: Configure JupyterHub Connection
-
-### Basic Settings:
+### Step 2: Configure JupyterHub Connection
 
 | Setting | Value |
 |---------|-------|
+| **JupyterHub Host URL** | `https://<your-domain>` |
 | **JupyterHub API URL** | `http://proxy-public.jupyter.svc.cluster.local/jupyter/hub/api` |
-| **JupyterHub Token** | `<whatever you have generated to authenticate the communication with xnat>` |
-| **Path Translation XNAT to JupyterHub** | Enabled |
+| **JupyterHub Token** | Service token from `5-jupyterhub-values.yaml` (hub.services.xnat-service.apiToken) |
 | **Start Timeout** | 300 (seconds) |
 | **Stop Timeout** | 60 (seconds) |
 
+### Step 3: Compute Environments
 
-## Step 3: Configure Compute Environment
+The plugin auto-creates a default compute environment on first boot. Update it to use NeuroDesk:
 
 Navigate to: **Administer** → **Plugin Settings** → **JupyterHub** → **Compute Environments**
 
-Click **"Add Compute Environment"** and configure:
-
-### Compute Environment Settings:
-
 ```yaml
 Name: NeuroDesk
-Description: NeuroDesk image with neuroimaging tools
-Image: ghcr.io/neurodesk/neurodesktop/neurodesktop:2024-12-05
+Image: ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-01-28
 ```
 
-### Resource Limits:
-```yaml
-CPU Limit: 4
-Memory Limit: 8G
-CPU Guarantee: 0.5
-Memory Guarantee: 1G
-```
+Hardware configs (Small/Medium/Large/XLarge) are auto-created by the plugin.
 
-### Environment Variables:
-```yaml
-JUPYTER_ENABLE_LAB=yes
-```
-
-## Step 4: Configure Project-Level Settings
+### Step 4: Enable JupyterHub Per-Project
 
 For each project that should have JupyterHub access:
 
-1. Navigate to project: **Projects** → **[Your Project]**
+1. Navigate to: **Projects** → **[Your Project]**
 2. Go to **Project Settings** → **JupyterHub**
 3. Enable JupyterHub for the project
 4. Select the Compute Environment: **NeuroDesk**
 
-## Step 5: Test User Access Configuration
+## REST API Reference
 
-The plugin uses XNAT's Project/User permissions. Users will only see projects they have access to in XNAT.
+The configuration script uses these XNAT REST API endpoints:
 
-### Expected API Response Format:
+### Preferences
+```
+GET  /xapi/jupyterhub/preferences              # Get all preferences
+POST /xapi/jupyterhub/preferences              # Set preferences (JSON map)
+POST /xapi/jupyterhub/preferences/{key}        # Set single preference
+```
 
-When JupyterHub calls XNAT API, XNAT should return:
+Key preference names:
+- `jupyterHubHostUrl` - JupyterHub host URL
+- `jupyterHubApiUrl` - JupyterHub API URL (internal)
+- `jupyterHubToken` - Service authentication token
+- `startTimeout` - Server start timeout (seconds)
+- `stopTimeout` - Server stop timeout (seconds)
+- `allUsersCanStartJupyter` - Allow all users to launch Jupyter
+- `workspacePath` - XNAT workspace path
+- `inactivityTimeout` - Idle timeout (minutes)
+- `maxServerLifetime` - Max server lifetime (hours)
+- `pathTranslationArchivePrefix` - XNAT archive path prefix
+- `pathTranslationArchiveDockerPrefix` - Container archive path prefix
+- `pathTranslationWorkspacePrefix` - XNAT workspace path prefix
+- `pathTranslationWorkspaceDockerPrefix` - Container workspace path prefix
+
+### Compute Environments
+```
+GET  /xapi/compute-environment-configs         # List compute environments
+POST /xapi/compute-environment-configs         # Create compute environment
+PUT  /xapi/compute-environment-configs/{id}    # Update compute environment
+```
+
+### Hardware Configs
+```
+GET  /xapi/hardware-configs                    # List hardware configs
+POST /xapi/hardware-configs                    # Create hardware config
+```
+
+### Dashboard Configs (for project-level enabling)
+```
+GET  /xapi/jupyterhub/dashboards/configs                              # List all
+POST /xapi/jupyterhub/dashboards/configs                              # Create
+POST /xapi/jupyterhub/dashboards/configs/{id}/scope/site              # Enable site-wide
+POST /xapi/jupyterhub/dashboards/configs/{id}/scope/project/{projId}  # Enable for project
+```
+
+## User Workflow
+
+1. **Login to XNAT** with credentials
+2. **Navigate to a project** where JupyterHub is enabled
+3. **Click "Launch JupyterHub"** button (appears in project actions)
+4. **Browser redirects to JupyterHub** (SSO - no re-login required)
+5. **JupyterHub spawns NeuroDesk** with:
+   - Personal workspace: `/home/jovyan` (10Gi persistent storage)
+   - XNAT workspace: `/data/xnat/workspaces/users/{username}` (read-write)
+   - XNAT workspace (alternate path): `/workspace/{username}` (read-write, same storage)
+   - Project data: Dynamically mounted based on XNAT permissions (read-only)
+
+**Note:** Build directory is NOT mounted in JupyterHub (only used by XNAT container service)
+
+## Expected API Response Format
+
+When JupyterHub's pre_spawn_hook calls XNAT, it expects:
 ```json
 {
   "task_template": {
     "container_spec": {
+      "image": "ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-01-28",
       "mounts": [
         {
           "source": "/data/xnat/archive/PROJECT_ID/arc001",
@@ -87,81 +150,3 @@ When JupyterHub calls XNAT API, XNAT should return:
   }
 }
 ```
-
-## Step 6: User Workflow
-
-### For End Users:
-
-1. **Login to XNAT** with AAF credentials
-2. **Navigate to a project** where JupyterHub is enabled
-3. **Click "Launch JupyterHub"** button (appears in project actions)
-4. **Browser redirects to JupyterHub**
-   - AAF OAuth uses existing browser session
-   - No re-login required!
-5. **JupyterHub spawns notebook** with:
-   - Personal workspace: `/home/jovyan` (10Gi persistent storage)
-   - XNAT workspace: `/data/xnat/workspaces/users/{username}` (read-write)
-   - XNAT workspace (alternate path): `/workspace/{username}` (read-write, same storage)
-   - Project data: Dynamically mounted based on XNAT permissions (read-only)
-
-**Note:** Build directory is NOT mounted in JupyterHub (only used by XNAT container service)
-
-
-## Step 7: Verify Integration
-
-### Test from XNAT UI:
-1. Login as a test user
-2. Navigate to a project with JupyterHub enabled
-3. Click "Launch JupyterHub"
-4. Should redirect to Jupyter Lab without additional complete login
-
-
-## Step 8: Configure XNAT User Options API
-
-XNAT needs to implement the user-options endpoint that JupyterHub calls.
-
-The endpoint should be: `GET /xapi/jupyterhub/users/{username}/server/user-options`
-
-This endpoint should:
-1. Authenticate the request (Basic Auth with admin credentials)
-2. Query XNAT database for user's accessible projects
-3. Return JSON in XNAT's task_template format
-
-### Example Implementation (pseudo-code):
-```python
-@GET
-@Path("/jupyterhub/users/{username}/server/user-options")
-def get_user_options(username):
-    # Get user's accessible projects from XNAT
-    projects = xnat.get_user_projects(username)
-    
-    mounts = []
-    for project in projects:
-        # Add archive mount for each accessible project
-        mounts.append({
-            "source": f"/data/xnat/archive/{project.id}/arc001",
-            "target": f"/data/xnat/archive/{project.id}/arc001",
-            "read_only": True
-        })
-    
-    return {
-        "task_template": {
-            "container_spec": {
-                "mounts": mounts,
-                "env": {
-                    "XNAT_USER": username,
-                    "XNAT_HOST": "xnat-web.ais-xnat.svc.cluster.local"
-                }
-            },
-            "resources": {
-                "cpu_limit": 4,
-                "mem_limit": "8G"
-            }
-        }
-    }
-```
-
-**Key Points:**
-- Uses XNAT's `task_template` structure (not flat JSON)
-- Mounts use `source`/`target` format (not `project_id`)
-- Workspace mounts are handled automatically by JupyterHub (don't include in API response)
