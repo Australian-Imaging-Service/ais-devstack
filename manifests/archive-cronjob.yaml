@@ -1,0 +1,66 @@
+# XNAT GCS Archiver CronJob
+# Runs nightly at 2am: downloads sessions via XNAT REST API and uploads to GCS
+#
+# Manual trigger:
+#   kubectl -n ais-xnat create job --from=cronjob/xnat-gcs-archiver xnat-manual-$(date +%s)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: xnat-gcs-archiver
+  namespace: ais-xnat
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: archiver
+              image: xnat-gcs-archiver:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: GCS_BUCKET
+                  value: "xnat-lucas-archive"
+                - name: XNAT_URL
+                  value: "http://xnat-web.ais-xnat.svc.cluster.local"
+                - name: DB_HOST
+                  value: "xnat-web-postgresql.ais-xnat.svc.cluster.local"
+                - name: DB_NAME
+                  value: "xnat"
+                - name: DB_USER
+                  value: "xnat"
+                - name: DB_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: db-password
+                      optional: true
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: password
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: /etc/gcs/key.json
+              volumeMounts:
+                - name: gcs-key
+                  mountPath: /etc/gcs
+                  readOnly: true
+          volumes:
+            - name: gcs-key
+              secret:
+                secretName: gcs-sa-key
+                items:
+                  - key: som-lucascenterxnat-607d15cfdace.json
+                    path: key.json
