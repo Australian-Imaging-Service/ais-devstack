@@ -24,11 +24,11 @@
 # ===============================================================================================================================
 
 hub:
-  baseUrl: /
+  baseUrl: /jupyter/
   config:
     JupyterHub:
       authenticator_class: generic-oauth
-      base_url: /
+      base_url: /jupyter/
       log_level: INFO
       allow_named_servers: true  # Enable multiple servers per user (XNAT uses named servers with timestamps)
       named_server_limit_per_user: 1
@@ -39,7 +39,7 @@ hub:
       # ===========================================
       client_id: "YOUR_GOOGLE_CLIENT_ID"
       client_secret: "YOUR_GOOGLE_CLIENT_SECRET"
-      oauth_callback_url: "https://YOUR_DOMAIN/hub/oauth_callback"
+      oauth_callback_url: "https://YOUR_DOMAIN/jupyter/hub/oauth_callback"
       authorize_url: "https://accounts.google.com/o/oauth2/v2/auth"
       token_url: "https://oauth2.googleapis.com/token"
       userdata_url: "https://openidconnect.googleapis.com/v1/userinfo"
@@ -53,7 +53,7 @@ hub:
       # ===========================================
       # client_id: "YOUR_AAF_CLIENT_ID"
       # client_secret: "YOUR_AAF_CLIENT_SECRET"
-      # oauth_callback_url: "https://YOUR_DOMAIN/hub/oauth_callback"
+      # oauth_callback_url: "https://YOUR_DOMAIN/jupyter/hub/oauth_callback"
       # authorize_url: "https://central.test.aaf.edu.au/providers/op/authorize"
       # token_url: "https://central.test.aaf.edu.au/providers/op/token"
       # userdata_url: "https://central.test.aaf.edu.au/providers/op/userinfo"
@@ -604,8 +604,7 @@ ingress:
   enabled: true
   ingressClassName: nginx
   annotations:
-    # Note: SSL certificate is provisioned by XNAT ingress (shared domain)
-    # JupyterHub uses the same TLS secret - no separate cert-manager annotation needed
+    cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
