@@ -1,5 +1,5 @@
 # XNAT Helm Chart Values for k3s deployment
-# Configured for Stanford Google OIDC authentication
+# Configured for Google OIDC authentication
 global:
   postgresql:
     auth:
@@ -63,7 +63,7 @@ xnat-web:
     container-service: []
     ohif-viewer: {}
     openid-auth-plugin:
-      - name: "Stanford Google Authentication"
+      - name: "Google Authentication"
         provider:
           id: google
         auth:
@@ -84,9 +84,9 @@ xnat-web:
             clientId: "YOUR_GOOGLE_CLIENT_ID"
             clientSecret: "YOUR_GOOGLE_CLIENT_SECRET"
             scopes: "openid,profile,email"
-            link: '<p>To sign-in using your Stanford Google account, please click on the button below.</p><p><a href="/openid-login?providerId=google">Sign in with Stanford Google</a></p>'
+            link: '<p>To sign-in using your Google account, please click on the button below.</p><p><a href="/openid-login?providerId=google">Sign in with Google</a></p>'
             shouldFilterEmailDomains: true
-            allowedEmailDomains: "stanford.edu"
+            allowedEmailDomains: "YOUR_EMAIL_DOMAIN"
             forceUserCreate: true
             userAutoEnabled: true
             userAutoVerified: true
