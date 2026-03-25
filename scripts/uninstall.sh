@@ -1,7 +1,7 @@
 #!/bin/bash
 # AIS-XNAT Unified Uninstall Script
 # Automatically detects and handles both MicroK8s and k3s environments
-set -e
+# Note: not using set -e because cleanup commands may return non-zero and that's OK
 
 # Color codes
 GREEN='\033[0;32m'
@@ -40,6 +40,95 @@ else
     exit 1
 fi
 
+# Helper: remove orphaned webhooks that block kubectl operations
+remove_orphaned_webhooks() {
+    echo -e "${YELLOW}Removing orphaned admission webhooks...${NC}"
+    # Longhorn webhooks
+    $KUBECTL delete validatingwebhookconfiguration longhorn-webhook-validator 2>/dev/null || true
+    $KUBECTL delete validatingwebhookconfiguration longhorn-admission-webhook 2>/dev/null || true
+    $KUBECTL delete mutatingwebhookconfiguration longhorn-webhook-mutator 2>/dev/null || true
+    $KUBECTL delete mutatingwebhookconfiguration longhorn-admission-webhook 2>/dev/null || true
+    # SPO webhooks
+    $KUBECTL delete mutatingwebhookconfiguration spo-mutating-webhook-configuration 2>/dev/null || true
+    $KUBECTL delete validatingwebhookconfiguration spo-validating-webhook-configuration 2>/dev/null || true
+    # cert-manager webhooks
+    $KUBECTL delete mutatingwebhookconfiguration cert-manager-webhook 2>/dev/null || true
+    $KUBECTL delete validatingwebhookconfiguration cert-manager-webhook 2>/dev/null || true
+}
+
+# Helper: strip finalizers from all PVCs in a namespace
+strip_pvc_finalizers() {
+    local ns=$1
+    for pvc in $($KUBECTL get pvc -n "$ns" -o name 2>/dev/null || true); do
+        $KUBECTL patch "$pvc" -n "$ns" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+    done
+}
+
+# Helper: strip finalizers from PVs by name
+strip_pv_finalizers() {
+    for pv in "$@"; do
+        $KUBECTL patch pv "$pv" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+    done
+}
+
+# Helper: run a command with a timeout; if it hangs, fix webhooks/finalizers and retry
+run_with_timeout() {
+    local timeout_secs=$1
+    local step_desc=$2
+    shift 2
+    local cmd="$@"
+
+    # Run command in background
+    eval "$cmd" &
+    local pid=$!
+
+    # Wait up to timeout_secs
+    local elapsed=0
+    while kill -0 $pid 2>/dev/null; do
+        if [ $elapsed -ge $timeout_secs ]; then
+            echo -e "${YELLOW}  ⚠ '$step_desc' stuck for ${timeout_secs}s — applying automatic fixes...${NC}"
+            kill $pid 2>/dev/null || true
+            wait $pid 2>/dev/null || true
+
+            # Fix 1: Remove orphaned webhooks
+            remove_orphaned_webhooks
+
+            # Fix 2: Strip finalizers from PVCs in ais-xnat
+            strip_pvc_finalizers "ais-xnat"
+
+            # Fix 3: Strip finalizers from known XNAT PVs
+            strip_pv_finalizers xnat-nfs xnat-build xnat-gpfs
+
+            # Fix 4: Strip namespace finalizers
+            if $KUBECTL get namespace ais-xnat &>/dev/null; then
+                $KUBECTL get namespace ais-xnat -o json 2>/dev/null | \
+                    jq '.spec.finalizers = []' | \
+                    $KUBECTL replace --raw "/api/v1/namespaces/ais-xnat/finalize" -f - 2>/dev/null || true
+            fi
+
+            echo -e "${YELLOW}  Retrying '$step_desc'...${NC}"
+            eval "$cmd" &
+            local retry_pid=$!
+            local retry_elapsed=0
+            while kill -0 $retry_pid 2>/dev/null; do
+                if [ $retry_elapsed -ge 15 ]; then
+                    echo -e "${YELLOW}  ⚠ Retry timed out, continuing...${NC}"
+                    kill $retry_pid 2>/dev/null || true
+                    wait $retry_pid 2>/dev/null || true
+                    return 0
+                fi
+                sleep 1
+                retry_elapsed=$((retry_elapsed + 1))
+            done
+            wait $retry_pid 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    wait $pid 2>/dev/null || true
+}
+
 echo -e "${BLUE}"
 echo "=========================================="
 echo "   AIS-XNAT Uninstallation"
@@ -66,24 +155,45 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
+# Step 0: Pre-emptively remove orphaned webhooks that can block kubectl operations
+echo -e "${BLUE}[0/6] Removing orphaned admission webhooks (prevents hangs)...${NC}"
+remove_orphaned_webhooks
+
 # Step 1: Uninstall XNAT Helm release
 echo -e "${BLUE}[1/6] Uninstalling XNAT...${NC}"
-$HELM uninstall xnat-web -n ais-xnat 2>/dev/null || echo "XNAT release not found"
+run_with_timeout 30 "Helm uninstall" "$HELM uninstall xnat-web -n ais-xnat 2>/dev/null || echo 'XNAT release not found'"
 
 # Step 2: Delete XNAT namespace resources
 echo -e "${BLUE}[2/6] Cleaning up ais-xnat namespace...${NC}"
-$KUBECTL delete all --all -n ais-xnat --force --grace-period=0 2>/dev/null || true
-$KUBECTL delete pvc --all -n ais-xnat --force --grace-period=0 2>/dev/null || true
+run_with_timeout 30 "Delete all resources" "$KUBECTL delete all --all -n ais-xnat --force --grace-period=0 2>/dev/null || true"
+run_with_timeout 30 "Delete PVCs" "$KUBECTL delete pvc --all -n ais-xnat --force --grace-period=0 2>/dev/null || true"
 $KUBECTL delete configmap --all -n ais-xnat 2>/dev/null || true
 $KUBECTL delete secret --all -n ais-xnat 2>/dev/null || true
-sleep 5
+
+# Check for stuck PVCs and strip finalizers
+STUCK_PVCS=$($KUBECTL get pvc -n ais-xnat -o jsonpath='{.items[?(@.metadata.deletionTimestamp)].metadata.name}' 2>/dev/null || true)
+if [ -n "$STUCK_PVCS" ]; then
+    echo -e "${YELLOW}  Found stuck PVCs, stripping finalizers...${NC}"
+    strip_pvc_finalizers "ais-xnat"
+    sleep 3
+fi
 
 # Step 3: Delete namespace
 echo -e "${BLUE}[3/6] Deleting ais-xnat namespace...${NC}"
-$KUBECTL delete namespace ais-xnat 2>/dev/null || echo "Namespace already deleted"
+run_with_timeout 30 "Delete namespace" "$KUBECTL delete namespace ais-xnat 2>/dev/null || echo 'Namespace already deleted'"
+
+# If namespace is still stuck, force-remove finalizers
+if $KUBECTL get namespace ais-xnat &>/dev/null; then
+    echo -e "${YELLOW}  Namespace stuck in Terminating, forcing removal...${NC}"
+    $KUBECTL get namespace ais-xnat -o json 2>/dev/null | \
+        jq '.spec.finalizers = []' | \
+        $KUBECTL replace --raw "/api/v1/namespaces/ais-xnat/finalize" -f - 2>/dev/null || true
+fi
 
 # Step 4: Delete XNAT PVs
 echo -e "${BLUE}[4/6] Cleaning up PersistentVolumes...${NC}"
+# Strip finalizers first to prevent hanging
+strip_pv_finalizers xnat-nfs xnat-build xnat-gpfs
 $KUBECTL delete pv xnat-nfs xnat-build xnat-gpfs 2>/dev/null || echo "PVs already deleted"
 
 # Step 5: Optional - Remove NFS server

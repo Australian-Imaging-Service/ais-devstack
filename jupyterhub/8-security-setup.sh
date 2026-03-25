@@ -91,7 +91,7 @@ echo "Note: Using neurodesk fork which supports 'spec.abstract' API and AppArmor
 # Clone the neurodesk branch temporarily
 TEMP_DIR=$(mktemp -d)
 cd $TEMP_DIR
-git clone --depth 1 --branch neurodesk https://github.com/Edan-Hamilton/security-profiles-operator.git
+git clone --depth 1 --branch neurodesk https://github.com/neurodesk/security-profiles-operator.git
 cd security-profiles-operator
 
 # Install using Helm with AppArmor enabled
@@ -99,7 +99,10 @@ echo "Installing with Helm (enableAppArmor=true)..."
 $HELM install security-profiles-operator ./deploy/helm \
   --namespace security \
   --set enableAppArmor=true \
-  --set replicaCount=1
+  --set replicaCount=1 \
+  --set spoImage.registry=ghcr.io \
+  --set spoImage.repository=neurodesk/security-profiles-operator \
+  --set spoImage.tag=latest
 
 # Cleanup temp directory
 cd -
