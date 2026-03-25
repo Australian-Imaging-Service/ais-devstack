@@ -37,3 +37,13 @@ data:
       echo adding plugin ${src}/${short_name}*.jar
       cp ${src}/${short_name}*.jar ${dst}/
     done
+
+    # Copy plugin JARs to Tomcat WEB-INF/lib so they are on the webapp classpath.
+    # XNAT's XnatPluginBeanManager scans classpath for META-INF/xnat/*-plugin.properties
+    # which only works if plugin JARs are in WEB-INF/lib.
+    if [ -d /TOMCAT/webapps/ROOT/WEB-INF/lib ]; then
+      echo "Copying plugin JARs to WEB-INF/lib for classpath discovery..."
+      cp /HOME-PLUGINS/*.jar /TOMCAT/webapps/ROOT/WEB-INF/lib/ 2>/dev/null || true
+    fi
+
+    chown -R 1000 /HOME-PLUGINS

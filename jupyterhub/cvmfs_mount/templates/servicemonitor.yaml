@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cvmfs-metrics
+  namespace: mounts
+  labels:
+    app: cvmfs-trace-parser
+spec:
+  selector:
+    matchLabels:
+      app: cvmfs-trace-parser
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics

@@ -1,11 +1,11 @@
 # XNAT Helm Chart Values for k3s deployment
-# Update the ingress host and OpenID settings for your environment
+# Configured for Google OIDC authentication
 global:
   postgresql:
     auth:
       database: xnat
       username: xnat
-      password: xnat
+      password: CHANGE_ME
 
 postgresql:
   image:
@@ -15,7 +15,7 @@ xnat-web:
   postgresql:
     postgresqlDatabase: xnat
     postgresqlUsername: xnat
-    postgresqlPassword: xnat
+    postgresqlPassword: CHANGE_ME
 
   replicaCount: 1
 
@@ -31,7 +31,7 @@ xnat-web:
       nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     ingressClassName: nginx
     hosts:
-      - host: xnat-test.ssdsorg.cloud.edu.au
+      - host: YOUR_DOMAIN
 
   resources:
     requests:
@@ -63,9 +63,9 @@ xnat-web:
     container-service: []
     ohif-viewer: {}
     openid-auth-plugin:
-      - name: "OpenID Authentication Provider"
+      - name: "Google Authentication"
         provider:
-          id: aaf
+          id: google
         auth:
           method: openid
         auto:
@@ -73,26 +73,26 @@ xnat-web:
           verified: true
         visible: true
         disableUsernamePasswordLogin: false
-        enabled: "aaf"
+        enabled: "google"
         preEstablishedRedirUri: "/openid-login"
-        siteUrl: "http://xnat-test.ssdsorg.cloud.edu.au"
+        siteUrl: "https://YOUR_DOMAIN"
         type: openid
         openid:
-          aaf:
-            accessTokenUri: https://central.test.aaf.edu.au/providers/op/token
-            userAuthUri: https://central.test.aaf.edu.au/providers/op/authorize
-            clientId: "d93e2fac-dee7-4a1e-92ba-07393a531683"
-            clientSecret: "H6aSysZWmqLEqvyNP9wfpcx9vSKxc961Xt7hcLORLYHz0uHNKLC1e0VjbdZoyMJ9mWHoQSiAbNSGqXu8UoRj8OTjZG0N1nBsym7QL5KlzeQ8v775eH8EdLl7LU"
+          google:
+            accessTokenUri: https://oauth2.googleapis.com/token
+            userAuthUri: https://accounts.google.com/o/oauth2/v2/auth
+            clientId: "YOUR_GOOGLE_CLIENT_ID"
+            clientSecret: "YOUR_GOOGLE_CLIENT_SECRET"
             scopes: "openid,profile,email"
-            link: '<p>To sign-in using your AAF credentials, please click on the button below.</p><p><a href="/openid-login?providerId=aaf"><img src="/images/aaf_service_223x54.png" /></a></p>'
+            link: '<p>To sign-in using your Google account, please click on the button below.</p><p><a href="/openid-login?providerId=google">Sign in with Google</a></p>'
             shouldFilterEmailDomains: true
-            allowedEmailDomains: "uq.edu.au"
+            allowedEmailDomains: "YOUR_EMAIL_DOMAIN"
             forceUserCreate: true
             userAutoEnabled: true
             userAutoVerified: true
             emailProperty: email
-            givenNameProperty: name
-            familyNameProperty: deliberately_unknown_property
+            givenNameProperty: given_name
+            familyNameProperty: family_name
 
   probes:
     startup:

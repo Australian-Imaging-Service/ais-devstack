@@ -23,3 +23,10 @@ Thumbs.db
 # Kubernetes secrets (be careful with sensitive data)
 # Uncomment if you have secret files
 # *-secret.yaml
+
+# Local values files (copy from .template)
+**/values.yaml
+jupyterhub/5-jupyterhub-values.yaml
+
+# JupyterHub plugin (downloaded during install)
+jupyterhub/*.jar

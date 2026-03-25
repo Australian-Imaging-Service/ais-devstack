@@ -12,7 +12,7 @@ XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Servic
 ## Directory Structure
 
 ```
-ais-xnat/
+ais-devstack/
 ├── README.md                    # This file
 ├── manifests/
 │   ├── pv.yaml                  # Persistent Volumes (NFS-backed)
@@ -20,14 +20,20 @@ ais-xnat/
 │   ├── configmap.yaml           # XNAT init script ConfigMap
 │   ├── kustomization.yaml       # Kustomize patches for StatefulSet
 │   ├── kustomize.sh             # Helm post-renderer script
-│   └── values.yaml              # XNAT Helm chart values
+│   └── values.yaml              # XNAT Helm chart values (domain config)
 ├── nfs-server/
 │   └── values.yaml              # NFS server Helm chart values
 ├── plugins/
 │   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
+├── jupyterhub/                  # JupyterHub integration (git subtree)
+│   ├── INSTALL.sh               # JupyterHub orchestrator
+│   ├── 5-jupyterhub-values.yaml.template  # JupyterHub config template
+│   └── ...                      # See jupyterhub/README.md
 └── scripts/
-    ├── install.sh               # Full installation script
-    └── uninstall.sh             # Uninstallation script
+    ├── install.sh               # XNAT install (prompts for JupyterHub)
+    ├── install-jupyterhub.sh    # JupyterHub installation
+    ├── uninstall.sh             # XNAT uninstallation
+    └── uninstall-jupyterhub.sh  # JupyterHub uninstallation
 ```
 
 ## Quick Start
@@ -35,7 +41,7 @@ ais-xnat/
 ### Install
 
 ```bash
-cd /home/ubuntu/ais-xnat
+cd /home/ubuntu/ais-devstack
 chmod +x scripts/*.sh manifests/kustomize.sh
 ./scripts/install.sh
 ```
@@ -175,18 +181,154 @@ xnat-web:
       - host: your-domain.example.com
 ```
 
-### OpenID Authentication
+### OpenID Connect (OIDC) Authentication
 
-Update the OpenID settings in `manifests/values.yaml`:
+Both XNAT and JupyterHub use OIDC for authentication. Choose **one** provider and configure both services to use it.
+
+**Supported Providers:**
+- **Google OIDC** - Recommended for development and testing (easy setup, works worldwide)
+- **AAF** - Australian Access Federation (for Australian research institutions)
+
+> **Important:** Both XNAT and JupyterHub must use the same OIDC provider. Users need to exist in both systems with matching usernames.
+
+---
+
+#### Option A: Google OIDC Setup
+
+**Step 1: Create Google OAuth Credentials**
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Navigate to **APIs & Services** > **Credentials**
+4. Click **Create Credentials** > **OAuth client ID**
+5. Select **Web application**
+6. Configure the OAuth client:
+
+   | Field | Value |
+   |-------|-------|
+   | Name | XNAT + JupyterHub |
+   | Authorized JavaScript origins | `https://your-domain.example.com` |
+   | Authorized redirect URIs | `https://your-domain.example.com/openid-login` |
+   | | `https://your-domain.example.com/hub/oauth_callback` |
+
+7. Click **Create** and note down the **Client ID** and **Client Secret**
+
+**Step 2: Configure XNAT for Google**
+
+Update `manifests/values.yaml`:
 
 ```yaml
 xnat-web:
   plugins:
     openid-auth-plugin:
-      - openid:
+      - name: "Google Authentication"
+        provider:
+          id: google
+        enabled: "google"
+        siteUrl: "https://your-domain.example.com"
+        openid:
+          google:
+            clientId: "your-google-client-id.apps.googleusercontent.com"
+            clientSecret: "your-google-client-secret"
+            # Other settings already configured in template
+```
+
+**Step 3: Configure JupyterHub for Google**
+
+Update `jupyterhub/5-jupyterhub-values.yaml`:
+
+```yaml
+hub:
+  config:
+    GenericOAuthenticator:
+      client_id: "your-google-client-id.apps.googleusercontent.com"
+      client_secret: "your-google-client-secret"
+      oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
+      # Google URLs already configured in template
+  extraEnv:
+    OIDC_PROVIDER_PREFIX: "google"  # Ensures username format matches XNAT
+```
+
+---
+
+#### Option B: AAF Setup (Australian Access Federation)
+
+**Step 1: Register with AAF**
+
+1. Go to [AAF Service Manager](https://manager.aaf.edu.au/) (production) or [Test AAF](https://manager.test.aaf.edu.au/) (testing)
+2. Register **two separate services**:
+
+   | Service | Callback URL |
+   |---------|--------------|
+   | XNAT | `https://your-domain.example.com/openid-login` |
+   | JupyterHub | `https://your-domain.example.com/hub/oauth_callback` |
+
+3. Note down the **Client ID** and **Client Secret** for each service
+
+**Step 2: Configure XNAT for AAF**
+
+Update `manifests/values.yaml` - comment out Google, uncomment AAF:
+
+```yaml
+xnat-web:
+  plugins:
+    openid-auth-plugin:
+      - name: "AAF Authentication"
+        provider:
+          id: aaf
+        enabled: "aaf"
+        siteUrl: "https://your-domain.example.com"
+        openid:
+          # google: ...  (comment out)
           aaf:
-            clientId: "your-client-id"
-            clientSecret: "your-client-secret"
+            accessTokenUri: https://central.aaf.edu.au/providers/op/token
+            userAuthUri: https://central.aaf.edu.au/providers/op/authorize
+            clientId: "your-aaf-xnat-client-id"
+            clientSecret: "your-aaf-xnat-client-secret"
+            scopes: "openid,profile,email"
+            # Other settings already configured in template
+```
+
+**Step 3: Configure JupyterHub for AAF**
+
+Update `jupyterhub/5-jupyterhub-values.yaml` - comment out Google, uncomment AAF:
+
+```yaml
+hub:
+  config:
+    GenericOAuthenticator:
+      # Google settings (comment out)
+      # client_id: ...
+
+      # AAF settings (uncomment)
+      client_id: "your-aaf-jupyterhub-client-id"
+      client_secret: "your-aaf-jupyterhub-client-secret"
+      oauth_callback_url: "https://your-domain.example.com/hub/oauth_callback"
+      authorize_url: "https://central.aaf.edu.au/providers/op/authorize"
+      token_url: "https://central.aaf.edu.au/providers/op/token"
+      userdata_url: "https://central.aaf.edu.au/providers/op/userinfo"
+      login_service: "AAF"
+      scope: [openid, profile, email, eduperson_principal_name]
+  extraEnv:
+    OIDC_PROVIDER_PREFIX: "aaf"  # Ensures username format matches XNAT
+```
+
+---
+
+#### Apply Configuration Changes
+
+After updating the configuration files:
+
+```bash
+# Upgrade XNAT
+helm upgrade xnat-web ais/xnat \
+  --namespace ais-xnat \
+  --values manifests/values.yaml \
+  --post-renderer ./manifests/kustomize.sh
+
+# Upgrade JupyterHub
+helm upgrade jupyterhub jupyterhub/jupyterhub -n jupyter \
+  --values jupyterhub/5-jupyterhub-values.yaml
 ```
 
 ### Storage Size
@@ -246,6 +388,51 @@ kubectl -n storage cp my-plugin.jar \
 kubectl -n ais-xnat rollout restart statefulset xnat-web
 ```
 
-## Next Steps
+## JupyterHub Integration
 
-After XNAT is running, you can deploy JupyterHub integration using the `ais-jupyterhub` repository.
+JupyterHub provides interactive Jupyter notebooks integrated with XNAT. The `jupyterhub/` directory contains the JupyterHub deployment as a git subtree from [ais-jupyterhub](https://github.com/Australian-Imaging-Service/ais-jupyterhub).
+
+### Install JupyterHub
+
+**Option 1:** During XNAT installation, answer "y" when prompted:
+```
+Install JupyterHub? (y/N): y
+```
+
+**Option 2:** Install separately after XNAT is running:
+```bash
+./scripts/install-jupyterhub.sh
+```
+
+The install script automatically reads the domain from `manifests/values.yaml` and configures JupyterHub to use the same domain.
+
+### Uninstall JupyterHub
+
+```bash
+./scripts/uninstall-jupyterhub.sh
+```
+
+### Update JupyterHub from Upstream
+
+The `jupyterhub/` directory is a git subtree. To pull updates from the upstream ais-jupyterhub repository:
+
+```bash
+git subtree pull --prefix=jupyterhub \
+  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
+  Development_AB --squash
+```
+
+To push local changes back to upstream (if you have write access):
+
+```bash
+git subtree push --prefix=jupyterhub \
+  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
+  Development_AB
+```
+
+### JupyterHub Documentation
+
+See the following files in `jupyterhub/` for more details:
+- `README.md` - Architecture overview
+- `XNAT-CONFIGURATION.md` - XNAT plugin setup
+- `TROUBLESHOOTING.md` - Common issues and solutions
