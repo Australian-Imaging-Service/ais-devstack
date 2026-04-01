@@ -59,10 +59,11 @@ $KUBECTL apply -f "$SCRIPT_DIR/4-nfs-pvc.yaml"
 echo "Waiting for PVCs to bind..."
 $KUBECTL wait --for=jsonpath='{.status.phase}'=Bound pvc/xnat-gpfs -n jupyter --timeout=60s
 
-# Apply XNAT Upload Extension ConfigMap BEFORE installing JupyterHub
-echo -e "${BLUE}[3/6] Applying XNAT Upload Extension ConfigMap...${NC}"
+# Apply XNAT mount mapping and Upload Extension ConfigMaps BEFORE installing JupyterHub
+echo -e "${BLUE}[3/6] Applying ConfigMaps (mount mapping + upload extension)...${NC}"
+$KUBECTL apply -f "$SCRIPT_DIR/2-xnat-mount-mapping.yaml"
 $KUBECTL apply -f "$SCRIPT_DIR/10-xnat-upload-extension.yaml"
-echo "XNAT Upload Extension ConfigMap created"
+echo "ConfigMaps created"
 
 # Add JupyterHub Helm repo
 echo -e "${BLUE}[4/6] Adding JupyterHub Helm repository...${NC}"
