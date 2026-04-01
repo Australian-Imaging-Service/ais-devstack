@@ -150,3 +150,43 @@ When JupyterHub's pre_spawn_hook calls XNAT, it expects:
   }
 }
 ```
+
+## Mount Path Mapping (xnat-mount-mapping ConfigMap)
+
+XNAT's JupyterHub plugin returns mount sources as container-internal paths
+(e.g., `/data/xnat/archive/proj_1`). However, XNAT uses custom subPath mappings
+in its StatefulSet (see `manifests/kustomization.yaml`) that don't match the
+actual NFS directory structure on the shared `/gpfs` volume.
+
+The `xnat-mount-mapping` ConfigMap (`jupyterhub/2-xnat-mount-mapping.yaml`) bridges
+this gap by mapping XNAT container paths to the real NFS subPaths.
+
+### When to update the mapping
+
+Every time you add a new project archive mount to `manifests/kustomization.yaml`,
+you must also add the corresponding entry to `2-xnat-mount-mapping.yaml`.
+
+### Example
+
+If you add a new project in `kustomization.yaml`:
+```yaml
+- mountPath: /data/xnat/archive/proj_3
+  name: xnat-gpfs
+  subPath: uq03/pool03/proj_3/xnat
+```
+
+Add to `2-xnat-mount-mapping.yaml`:
+```json
+{
+  "/data/xnat/archive/proj_1": "uq01/pool01/proj_1/xnat",
+  "/data/xnat/archive/proj_2": "uq02/pool02/proj_2/xnat",
+  "/data/xnat/archive/proj_3": "uq03/pool03/proj_3/xnat"
+}
+```
+
+Then apply:
+```bash
+kubectl apply -f jupyterhub/2-xnat-mount-mapping.yaml
+# Restart JupyterHub hub pod to pick up the new ConfigMap
+kubectl rollout restart deployment/hub -n jupyter
+```

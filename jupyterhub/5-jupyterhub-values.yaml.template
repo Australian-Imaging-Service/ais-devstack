@@ -120,6 +120,16 @@ hub:
     # This determines the username prefix (google_{sub} or aaf_{sub})
     OIDC_PROVIDER_PREFIX: "google"
 
+  extraVolumes:
+    - name: xnat-mount-mapping
+      configMap:
+        name: xnat-mount-mapping
+
+  extraVolumeMounts:
+    - name: xnat-mount-mapping
+      mountPath: /etc/jupyterhub/xnat-mount-mapping
+      readOnly: true
+
   extraConfig:
     00_set_crypt_key: |
       import os, base64, binascii
@@ -301,6 +311,39 @@ hub:
     03_xnat_pre_spawn_hook: |
       import json
 
+      # Load XNAT archive path -> NFS subPath mapping from ConfigMap
+      # This translates XNAT container-internal paths to actual NFS paths
+      _XNAT_MOUNT_MAPPING = {}
+      try:
+          with open('/etc/jupyterhub/xnat-mount-mapping/mount-mapping.json') as _f:
+              _XNAT_MOUNT_MAPPING = json.load(_f)
+      except Exception as _e:
+          import logging
+          logging.getLogger('JupyterHub').warning(f"Could not load xnat-mount-mapping: {_e}")
+
+      def _resolve_nfs_subpath(source):
+          """
+          Translate an XNAT container-internal path to the real NFS subPath.
+
+          Matches the source against known XNAT archive mount points (from the
+          ConfigMap) and returns the corresponding NFS subPath. Any path components
+          after the matched prefix are appended.
+
+          e.g. source="/data/xnat/archive/proj_1/arc001"
+               mapping has "/data/xnat/archive/proj_1" -> "uq01/pool01/proj_1/xnat"
+               returns "uq01/pool01/proj_1/xnat/arc001"
+
+          Returns (subpath, matched) where matched=False means fallback was used.
+          """
+          for xnat_path, nfs_subpath in _XNAT_MOUNT_MAPPING.items():
+              if source == xnat_path:
+                  return nfs_subpath, True
+              if source.startswith(xnat_path + '/'):
+                  remainder = source[len(xnat_path) + 1:]
+                  return f"{nfs_subpath}/{remainder}", True
+          # Fallback: strip /data/xnat/ prefix (legacy behavior, likely wrong)
+          return source[len('/data/xnat/'):], False
+
       async def pre_spawn_hook(spawner):
           import requests
           from requests.auth import HTTPBasicAuth
@@ -461,7 +504,16 @@ hub:
                       if 'workspaces' in source or not source.startswith('/data/xnat/'):
                           continue
 
-                      subpath = source[len('/data/xnat/'):]
+                      subpath, matched = _resolve_nfs_subpath(source)
+                      if not matched:
+                          spawner.log.warning(
+                              f"No mount mapping for XNAT path '{source}', "
+                              f"falling back to subPath '{subpath}'. "
+                              f"Add this path to the xnat-mount-mapping ConfigMap."
+                          )
+                      else:
+                          spawner.log.info(f"Mapped XNAT path '{source}' -> NFS subPath '{subpath}'")
+
                       xnat_mount = {
                           'name': 'xnat-gpfs',
                           'mountPath': target,
