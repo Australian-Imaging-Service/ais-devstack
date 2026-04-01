@@ -181,7 +181,7 @@ hub:
               return username
 
           # If already has a known provider prefix, return as-is
-          if username.startswith('google_') or username.startswith('aaf_'):
+          if username.startswith('google_') or username.startswith('aaf_') or username.startswith('stanford_'):
               return username
 
           # Add provider prefix to match XNAT username format
