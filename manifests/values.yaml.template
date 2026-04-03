@@ -77,7 +77,7 @@ xnat-web:
           enabled: true
           verified: true
         visible: true
-        disableUsernamePasswordLogin: false
+        disableUsernamePasswordLogin: true
         enabled: "stanford"
         preEstablishedRedirUri: "/openid-login"
         siteUrl: "https://xnat-test.ssdsorg.cloud.edu.au"
@@ -85,7 +85,7 @@ xnat-web:
         openid:
           stanford:
             pkceEnabled: true
-            usernamePattern: "stanford_[preferred_username]"
+            usernamePattern: "[email_prefix]"
             accessTokenUri: https://login.stanford.edu/idp/profile/oidc/token
             userAuthUri: https://login.stanford.edu/idp/profile/oidc/authorize
             userInfoUri: https://login.stanford.edu/idp/profile/oidc/userinfo
