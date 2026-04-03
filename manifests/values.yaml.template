@@ -85,9 +85,10 @@ xnat-web:
         openid:
           stanford:
             pkceEnabled: true
-            usernamePattern: "stanford_[sub]"
+            usernamePattern: "stanford_[preferred_username]"
             accessTokenUri: https://login.stanford.edu/idp/profile/oidc/token
             userAuthUri: https://login.stanford.edu/idp/profile/oidc/authorize
+            userInfoUri: https://login.stanford.edu/idp/profile/oidc/userinfo
             clientId: "w-8e73882581ab1d"
             clientSecret: "8QxdGkgA7rX26ZFC9y4FKYr6nhNzHSWgZBz7"
             scopes: "openid,profile,email"
