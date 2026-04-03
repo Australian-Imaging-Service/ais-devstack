@@ -4,7 +4,10 @@ XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Servic
 
 ### Important guidelines:
 
-Never write credentials directly into the codebase and never commit them to github. Always use SOPS to encrypt secrets.
+- Never write credentials directly into the codebase and never commit them to github. Always use SOPS to encrypt secrets.
+- Always test if you changes actually worked on the cluster
+- Always check AGENTS.md file if the changes made should be documented in there.
+- Always make sure there is local account admin with password admin and that it's not possible to login with local user accounts.
 
 ### Deployment Notes
 
@@ -72,7 +75,7 @@ Stanford's Shibboleth IdP puts minimal claims in the ID token (typically just `s
 ### Claim mapping
 
 The XNAT plugin maps OIDC claims to user fields via these properties in `values.yaml`:
-- `usernamePattern` — which claim becomes the XNAT username (use `[preferred_username]` for SUNet ID, not `[sub]` which is an opaque ID)
+- `usernamePattern` — which claim becomes the XNAT username. Use `[email_prefix]` (custom patch) which extracts the part before `@` from the email claim (e.g., `sciget` from `sciget@stanford.edu`). Do NOT use `[sub]` — Stanford's `sub` is a UUID with `@stanford.edu` suffix that fails XNAT's `sanitizeUsername`. Do NOT use `[preferred_username]` — although Stanford returns it in the UserInfo response, it is not listed in their OIDC discovery endpoint's `claims_supported` and was unreliable in testing. The `[email_prefix]` token is a custom patch in `plugins/patches/OpenIdConnectUserDetails.java`.
 - `emailProperty` — claim name for email (standard: `email`)
 - `givenNameProperty` — claim name for first name (standard: `given_name`)
 - `familyNameProperty` — claim name for last name (standard: `family_name`)
@@ -147,47 +150,12 @@ kubectl -n storage cp my-plugin.jar \
 kubectl -n ais-xnat rollout restart statefulset xnat-web
 ```
 
-## JupyterHub Integration
+Emergency recovery note: If OIDC ever breaks and you can't log in, you can re-enable local login via:
 
-JupyterHub provides interactive Jupyter notebooks integrated with XNAT. The `jupyterhub/` directory contains the JupyterHub deployment as a git subtree from [ais-jupyterhub](https://github.com/Australian-Imaging-Service/ais-jupyterhub).
-
-### Install JupyterHub
-
-**Option 1:** During XNAT installation, answer "y" when prompted:
 ```
-Install JupyterHub? (y/N): y
+sudo kubectl -n ais-xnat port-forward svc/xnat-web 8081:80 &
+# Then from another session:
+curl -u admin:admin -X POST -H "Content-Type: application/json" \
+  -d '{"enabledProviders": ["localdb", "stanford"]}' \
+  http://localhost:8081/xapi/siteConfig
 ```
-
-**Option 2:** Install separately after XNAT is running:
-```bash
-./scripts/install-jupyterhub.sh
-```
-
-The install script automatically reads the domain from `manifests/values.yaml` and configures JupyterHub to use the same domain.
-
-
-
-### Update JupyterHub from Upstream
-
-The `jupyterhub/` directory is a git subtree. To pull updates from the upstream ais-jupyterhub repository:
-
-```bash
-git subtree pull --prefix=jupyterhub \
-  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
-  Development_AB --squash
-```
-
-To push local changes back to upstream (if you have write access):
-
-```bash
-git subtree push --prefix=jupyterhub \
-  https://github.com/Australian-Imaging-Service/ais-jupyterhub.git \
-  Development_AB
-```
-
-### JupyterHub Documentation
-
-See the following files in `jupyterhub/` for more details:
-- `README.md` - Architecture overview
-- `XNAT-CONFIGURATION.md` - XNAT plugin setup
-- `TROUBLESHOOTING.md` - Common issues and solutions
