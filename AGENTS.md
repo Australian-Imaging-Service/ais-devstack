@@ -7,7 +7,7 @@ XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Servic
 - Never write credentials directly into the codebase and never commit them to github. Always use SOPS to encrypt secrets.
 - Always test if you changes actually worked on the cluster
 - Always check AGENTS.md file if the changes made should be documented in there.
-- Always make sure there is local account admin with password admin and that it's not possible to login with local user accounts.
+- Always make sure there is local account admin and that it's not possible to login with local user accounts. The admin password is stored in the `xnat-archiver-creds` Kubernetes secret.
 
 ### Deployment Notes
 
@@ -155,7 +155,7 @@ Emergency recovery note: If OIDC ever breaks and you can't log in, you can re-en
 ```
 sudo kubectl -n ais-xnat port-forward svc/xnat-web 8081:80 &
 # Then from another session:
-curl -u admin:admin -X POST -H "Content-Type: application/json" \
+curl -u admin:<password-from-xnat-archiver-creds-secret> -X POST -H "Content-Type: application/json" \
   -d '{"enabledProviders": ["localdb", "stanford"]}' \
   http://localhost:8081/xapi/siteConfig
 ```
