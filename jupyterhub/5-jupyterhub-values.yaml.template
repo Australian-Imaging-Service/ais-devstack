@@ -31,7 +31,7 @@ hub:
       base_url: /jupyter
       log_level: INFO
       allow_named_servers: true  # Enable multiple servers per user (XNAT uses named servers with timestamps)
-      named_server_limit_per_user: 1
+      named_server_limit_per_user: 2
 
     GenericOAuthenticator:
       # ===========================================
