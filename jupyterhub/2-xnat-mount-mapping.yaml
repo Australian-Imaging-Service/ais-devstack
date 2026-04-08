@@ -31,5 +31,6 @@ data:
   mount-mapping.json: |
     {
       "/data/xnat/archive/proj_1": "uq01/pool01/proj_1/xnat",
-      "/data/xnat/archive/proj_2": "uq02/pool02/proj_2/xnat"
+      "/data/xnat/archive/proj_2": "uq02/pool02/proj_2/xnat",
+      "/data/xnat/archive/test": "test/xnat"
     }
