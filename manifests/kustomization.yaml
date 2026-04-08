@@ -27,6 +27,9 @@ patches:
                   - mountPath: /data/xnat/archive/proj_2
                     name: xnat-gpfs
                     subPath: uq02/pool02/proj_2/xnat
+                  - mountPath: /data/xnat/archive/test
+                    name: xnat-gpfs
+                    subPath: test/xnat
                   - mountPath: /data/xnat/build
                     name: xnat-build
                   - mountPath: /usr/local/share/xnat/plugins
