@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cvmfs-squid
+  namespace: __NS__
+  labels: { app: cvmfs-squid }
+spec:
+  type: ClusterIP
+  selector: { app: cvmfs-squid }
+  ports:
+    - { name: proxy, port: 3128, targetPort: 3128, protocol: TCP }
