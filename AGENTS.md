@@ -91,6 +91,85 @@ The Stanford relying party is managed at Stanford's RP Manager. Key settings:
 - PKCE: enabled (matches `pkceEnabled: true` in values.yaml)
 - Redirect URIs must include: `https://<domain>/openid-login`
 
+## ais-edge ingestion → service account & projects
+
+The [ais-edge](https://github.com/Australian-Imaging-Service/ais-edge) management node uploads de-identified DICOMs into this XNAT via REST. It needs a **localdb** service account because the `xnat-ingest-upload` pod authenticates with `POST /data/JSESSION` + username/password (Stanford OIDC is interactive-only).
+
+### One-shot setup / disaster recovery
+
+```bash
+./scripts/setup-edge-uploader.sh
+```
+
+Idempotent. Creates the user, grants `Administrator` role, creates the seed projects, makes the user an Owner of each, and stores credentials in the `edge-uploader-creds` k8s secret. Re-running against existing state is a no-op for the password. Env overrides: `XNAT_URL`, `EDGE_USER`, `EDGE_EMAIL`, `EDGE_PROJECTS`, `XNAT_NAMESPACE`.
+
+### What it provisions
+
+- **Service account**: `edge-uploader` (localdb), email `mail.neurodesk@gmail.com`, site-wide `Administrator` role
+- **Seed projects** (Owner = `edge-uploader`): `polimeni`, `ennis`, `dicomtest`, `misc` (catch-all for un-routed AETs), `Siemens_cimax`
+- **k8s secret** `ais-xnat/edge-uploader-creds` with keys `username`, `password`, `xnat_url`, `email`
+
+### Why REST works despite OIDC-only login
+
+`siteConfig.enabledProviders` is `["stanford"]` — the web login form refuses localdb. But REST `POST /data/JSESSION` and HTTP Basic on `/xapi/*` / `/data/*` still accept localdb credentials. So service accounts work without weakening the OIDC enforcement on humans.
+
+### Credentials for ais-edge `config/management.env`
+
+```bash
+XNAT_URL=https://xnat-lucas.neurodesk.org
+XNAT_USER=edge-uploader
+XNAT_PASS=$(sudo kubectl -n ais-xnat get secret edge-uploader-creds -o jsonpath='{.data.password}' | base64 -d)
+```
+
+### Manual curl recipes (for reference / rotation)
+
+Admin credentials come from the `xnat-archiver-creds` secret:
+
+```bash
+ADMIN_PW=$(sudo kubectl -n ais-xnat get secret xnat-archiver-creds -o jsonpath='{.data.password}' | base64 -d)
+```
+
+Create the user:
+
+```bash
+EDGE_PW=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+curl -sS -u "admin:${ADMIN_PW}" -X POST https://xnat-lucas.neurodesk.org/xapi/users \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"edge-uploader\",\"password\":\"${EDGE_PW}\",\"email\":\"mail.neurodesk@gmail.com\",\"firstName\":\"Edge\",\"lastName\":\"Uploader\",\"enabled\":true,\"verified\":true}"
+```
+
+Grant site-wide Administrator role:
+
+```bash
+curl -sS -u "admin:${ADMIN_PW}" -X PUT \
+  https://xnat-lucas.neurodesk.org/xapi/users/edge-uploader/roles/Administrator
+```
+
+Create a project and assign Owner:
+
+```bash
+PROJ=misc
+curl -sS -u "admin:${ADMIN_PW}" -X PUT \
+  "https://xnat-lucas.neurodesk.org/data/projects/${PROJ}?name=${PROJ}&secondary_ID=${PROJ}"
+curl -sS -u "admin:${ADMIN_PW}" -X PUT \
+  "https://xnat-lucas.neurodesk.org/data/projects/${PROJ}/users/Owners/edge-uploader"
+```
+
+Rotate the password (re-stores the secret):
+
+```bash
+NEW_PW=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+curl -sS -u "admin:${ADMIN_PW}" -X PUT \
+  "https://xnat-lucas.neurodesk.org/xapi/users/edge-uploader/password" \
+  -H "Content-Type: text/plain" --data "$NEW_PW"
+sudo kubectl -n ais-xnat delete secret edge-uploader-creds
+sudo kubectl -n ais-xnat create secret generic edge-uploader-creds \
+  --from-literal=username=edge-uploader \
+  --from-literal=password="$NEW_PW" \
+  --from-literal=xnat_url=https://xnat-lucas.neurodesk.org \
+  --from-literal=email=mail.neurodesk@gmail.com
+```
+
 ## Troubleshooting
 
 ### XNAT pod stuck in Init
