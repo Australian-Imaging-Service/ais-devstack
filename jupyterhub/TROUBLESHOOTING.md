@@ -85,9 +85,9 @@ helm list -n mounts | grep cvmfs-csi
 kubectl get pods -n mounts
 
 # Reinstall if needed
-helm uninstall cvmfs-csi -n mounts
-helm uninstall smarter-device-manager -n mounts
-./6-cvmfs-mounts.sh
+# CVMFS is now part of the neurodesk chart — reinstall the whole JH layer:
+./UNINSTALL.sh
+./6-install-neurodesk.sh
 ```
 
 #### Problem: CVMFS PVC stuck in Pending
@@ -212,7 +212,7 @@ helm list -n monitoring
 
 # Uninstall and reinstall if needed
 helm uninstall prometheus -n monitoring
-./7-monitoring.sh
+./5-monitoring.sh
 ```
 
 #### Problem: Prometheus pods not starting
@@ -303,8 +303,8 @@ kubectl logs -n security -l app=spod
 kubectl get daemonset spod -n security -o yaml | grep KUBELET_ROOT
 
 # Should show: /var/snap/microk8s/common/var/lib/kubelet
-# If not, re-run security setup:
-./8-security-setup.sh
+# If not, reinstall the chart (SPO/AppArmor are part of it now):
+./6-install-neurodesk.sh
 ```
 
 #### Problem: AppArmor profile not loading
@@ -363,8 +363,8 @@ kubectl get clusterrolebinding | grep -E "(spo-|security-profiles)" | awk '{prin
 kubectl delete mutatingwebhookconfiguration spo-mutating-webhook-configuration
 kubectl delete validatingwebhookconfiguration spo-validating-webhook-configuration
 
-# Then re-run installation
-./8-security-setup.sh
+# Then reinstall the chart (SPO/AppArmor are part of it now)
+./6-install-neurodesk.sh
 ```
 
 #### Problem: Need to manually remove AppArmor profile from host
@@ -1209,27 +1209,21 @@ bash 2-install-longhorn.sh
 # Wait for Longhorn to be ready
 kubectl wait --for=condition=ready pod -l app=longhorn-manager -n longhorn-system --timeout=300s
 
-bash 6-cvmfs-mounts.sh
-# Wait for CVMFS to be ready
-kubectl wait --for=condition=ready pod -l app=smarter-device-manager -n mounts --timeout=300s
+# NFS shared workspace (jupyter/xnat-gpfs)
+kubectl apply -f 3-nfs-pv.yaml
+kubectl apply -f 4-nfs-pvc.yaml
 
-bash 7-monitoring.sh
+bash 5-monitoring.sh
 # Wait for Prometheus stack to be ready
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
 
-bash 8-security-setup.sh
-# Wait for Security Profiles Operator to be ready
-kubectl wait --for=condition=ready pod -l app=spod -n security --timeout=300s
-
-bash 9-install-jupyterhub.sh
-# Wait for JupyterHub to be ready
+# JupyterHub layer = ONE chart (JupyterHub + CVMFS + smarter-device-manager + SPO + XNAT ext)
+bash 6-install-neurodesk.sh
+# Wait for the hub to be ready
 kubectl wait --for=condition=ready pod -l component=hub -n jupyter --timeout=300s
 
-# Verify all components
+# Verify all components (everything is now in the jupyter namespace)
 kubectl get pods -n jupyter
-kubectl get pods -n mounts
-kubectl get pods -n monitoring
-kubectl get pods -n security
 kubectl get apparmorprofile -n security
 
 # Verify metrics are flowing

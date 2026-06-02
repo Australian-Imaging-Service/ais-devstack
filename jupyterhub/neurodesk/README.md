@@ -18,8 +18,8 @@ JupyterHub application layer with **one** chart:
 
 Longhorn (`2-install-longhorn.sh`), NFS (`3`/`4` + `../../nfs-server/`),
 ingress-nginx + cert-manager + XNAT server (`../../scripts/install.sh`),
-the Prometheus stack (`7-monitoring.sh`), and the XNAT **server-side** plugins
-(`0-xnat-jupyter-plugin.sh` + the `.jar`). The chart references these; it does
+the Prometheus stack (`5-monitoring.sh`), and the XNAT **server-side** plugins
+(`7-xnat-jupyter-plugin.sh` + the `.jar`). The chart references these; it does
 not install them.
 
 ## Use
