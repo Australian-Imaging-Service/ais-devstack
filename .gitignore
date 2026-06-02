@@ -30,3 +30,5 @@ jupyterhub/5-jupyterhub-values.yaml
 
 # JupyterHub plugin (downloaded during install)
 jupyterhub/*.jar
+jupyterhub/neurodesk/values-devstack.yaml
+jupyterhub/neurodesk/.chart/

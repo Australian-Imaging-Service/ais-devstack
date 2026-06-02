@@ -4,6 +4,20 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 
 (Do a quick complete install by using: `./INSTALL.sh`)
 
+> **⚠️ CONSOLIDATED (neurodesk chart):** The JupyterHub application layer —
+> JupyterHub, CVMFS + smarter-device-manager, the Security Profiles Operator +
+> AppArmor profile, and the XNAT notebook upload-extension — is now installed by
+> a **single Helm chart** in [`neurodesk/`](neurodesk/) instead of the old
+> numbered scripts. The replaced files (`5-jupyterhub-values.yaml.template`,
+> `6-cvmfs-mounts.sh`, `8-security-setup.sh`, `9-install-jupyterhub.sh`,
+> `10-xnat-upload-extension.yaml`, `cvmfs_mount/`, `security/`, `../squid/`)
+> were removed. **Infrastructure is unchanged** — Longhorn (`2-`), NFS (`3-`/`4-`
+> + `../nfs-server/`), monitoring (`7-`), and the XNAT server + its server-side
+> plugin (`0-` + the `.jar`) install exactly as before. `INSTALL.sh` now wires
+> infra (old way) → `neurodesk/install.sh` (the chart). See
+> [`neurodesk/README.md`](neurodesk/README.md). The "Installation Steps" section
+> below is the legacy per-component flow, kept for reference.
+
 
 **Important Note:** Replace `<username>`, `<jupyter-token>`, and domain names with your actual deployment values.
 

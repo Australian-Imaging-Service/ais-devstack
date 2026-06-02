@@ -1,0 +1,208 @@
+# TEMPLATE — copy to values-devstack.yaml and fill in the blanked secrets.
+nameOverride: ''
+global:
+  domain: xnat-test.ssdsorg.cloud.edu.au
+  storageClassName: longhorn
+  cvmfs:
+    server: http://cvmfs-geoproximity.neurodesk.org/cvmfs/@fqrn@;http://cvmfs-jetstream.neurodesk.org/cvmfs/@fqrn@;http://s1fnal-cvmfs.openhtc.io/cvmfs/@fqrn@
+    squidEnabled: false
+infra:
+  monitoring:
+    serviceMonitors: false
+cvmfs:
+  enabled: true
+  probe:
+    enabled: false
+  traceParser:
+    enabled: false
+security:
+  enabled: true
+  installOperator: true
+  appArmor:
+    enabled: true
+    profileName: notebook
+  seccomp:
+    enabled: false
+xnat:
+  enabled: true
+  server:
+    host: xnat-web.ais-xnat.svc.cluster.local
+    namespace: ais-xnat
+  uploadExtension:
+    enabled: true
+cvmfs-csi:
+  cache:
+    local:
+      cvmfsQuotaLimit: 5000
+jupyterhub:
+  debug:
+    enabled: false
+  hub:
+    baseUrl: /jupyter
+    config:
+      Authenticator:
+        enable_auth_state: false
+        refresh_pre_spawn: false
+      GenericOAuthenticator:
+        allow_all: true
+        authorize_url: https://central.test.aaf.edu.au/providers/op/authorize
+        client_id: ''
+        client_secret: ''
+        login_service: AAF
+        oauth_callback_url: https://xnat-test.ssdsorg.cloud.edu.au/jupyter/hub/oauth_callback
+        scope:
+        - openid
+        - profile
+        - email
+        - eduperson_principal_name
+        - eduperson_scoped_affiliation
+        - eduperson_affiliation
+        - eduperson_assurance
+        - schac_home_organization
+        - aueduperson
+        token_url: https://central.test.aaf.edu.au/providers/op/token
+        userdata_url: https://central.test.aaf.edu.au/providers/op/userinfo
+        username_claim: sub
+      JupyterHub:
+        allow_named_servers: true
+        authenticator_class: generic-oauth
+        base_url: /jupyter
+        log_level: INFO
+        named_server_limit_per_user: 1
+      KubeSpawner:
+        extra_container_config:
+          securityContext:
+            appArmorProfile:
+              localhostProfile: notebook
+              type: Localhost
+            privileged: false
+        extra_resource_guarantees:
+          smarter-devices/fuse: '1'
+        extra_resource_limits:
+          smarter-devices/fuse: '1'
+        http_timeout: 120
+        start_timeout: 900
+    db:
+      pvc:
+        storage: 5Gi
+        storageClassName: longhorn
+      type: sqlite-pvc
+    extraConfig:
+      00_set_crypt_key: "import os, base64, binascii\nhexkey = os.environ.get(\"JUPYTERHUB_CRYPT_KEY_HEX\", \"\").strip()\nif not hexkey:\n  raise SystemExit(\"JUPYTERHUB_CRYPT_KEY_HEX missing\")\ntry:\n  raw = binascii.unhexlify(hexkey)\nexcept binascii.Error as e:\n  raise SystemExit(f\"Invalid hex key: {e}\")\nfernet_key = base64.urlsafe_b64encode(raw)\nc.CryptKeeper.keys = [fernet_key]\n"
+      01_add_xnat_username_column: "from sqlalchemy import Column, String\nfrom jupyterhub import orm\n\nif not hasattr(orm.User, 'xnat_username'):\n    orm.User.xnat_username = Column(String(255), nullable=True)\n\nif not hasattr(orm.User, 'eduperson_principal_name'):\n    orm.User.eduperson_principal_name = Column(String(255), nullable=True)\n"
+      02_username_normalization: "from oauthenticator.generic import GenericOAuthenticator\nfrom jupyterhub.apihandlers.users import UserAPIHandler, UserServerAPIHandler\nfrom jupyterhub.handlers import BaseHandler\nfrom jupyterhub import orm\nimport json\nimport os\n\n# Detect provider from login_service config (set by GenericOAuthenticator)\n# Default to 'google' if not specified\nPROVIDER_PREFIX = os.environ.get('OIDC_PROVIDER_PREFIX', 'google')\n\ndef normalize_username(username):\n    \"\"\"\n    Normalize username by adding provider prefix to match XNAT username.\n\n    JupyterHub username = XNAT username = {provider}_{sub_claim}\n\n    Supports:\n    - Google OIDC: google_{sub_claim}\n    - AAF: aaf_{sub_claim}\n\n    This function adds the provider prefix if not already present.\n    \"\"\"\n    if not username:\n        return username\n\n    # If already has a known provider prefix, return as-is\n    if username.startswith('google_') or username.startswith('aaf_'):\n        return username\n\n    # Add provider prefix to match XNAT username format\n    return f'{PROVIDER_PREFIX}_{username}'\n\ndef normalize_oidc(self, username):\n    \"\"\"Override JupyterHub normalizer to add provider prefix\"\"\"\n    return normalize_username(username)\n\nGenericOAuthenticator.normalize_username = normalize_oidc\n\noriginal_authenticate = GenericOAuthenticator.authenticate\n\nasync def authenticate_with_storage(self, handler, data=None, **kwargs):\n    \"\"\"\n    Authenticate and store mapping information in database.\n\n    Stores three fields:\n    1. name (primary key): {provider}_{sub_claim} - JupyterHub username (same as XNAT)\n    2. xnat_username: {provider}_{sub_claim} - redundant storage for mapping compatibility\n    3. eduperson_principal_name: email from OIDC provider - stored for reference\n    \"\"\"\n    result = await original_authenticate(self, handler, data, **kwargs)\n\n    if result and isinstance(result, dict):\n        username = result.get('name')  # This is the normalized sub claim: {provider}_{sub}\n\n        if username:\n            auth_state = result.get('auth_state', {})\n            user_info = auth_state.get('oauth_user', {})\n\n            if user_info:\n                # Get email from OIDC provider (works for both Google and AAF)\n                user_email = user_info.get('email', '') or user_info.get('edu_person_principal_name', '')\n\n                user = self.db.query(orm.User).filter_by(name=username).first()\n                if user:\n                    # Store XNAT username (same as JupyterHub username) for mapping compatibility\n                    if not user.xnat_username:\n                        user.xnat_username = username\n\n                    # Store email for reference\n                    if not user.eduperson_principal_name and user_email:\n                        user.eduperson_principal_name = user_email\n\n                    self.db.commit()\n            else:\n                self.log.warning(f\"OIDC provider did not return user info for {username}\")\n\n    return result\n\nGenericOAuthenticator.authenticate = authenticate_with_storage\n\ndef map_xnat_to_jupyterhub_username(handler, user_name):\n    \"\"\"\n    Map XNAT username to JupyterHub username with fallback logic.\n\n    Since JupyterHub username = XNAT username (both are aaf_{sub}), this mainly\n    handles edge cases and backward compatibility:\n\n    1. Direct match: If user_name exists as JupyterHub username, return it\n    2. Database lookup: Try to find user by xnat_username field\n    3. Normalization: Apply aaf_ prefix normalization as fallback\n\n    This ensures API calls work regardless of whether XNAT sends:\n    - aaf_{sub} (exact match)\n    - {sub} without prefix (gets normalized)\n    - Any legacy format stored in xnat_username field\n    \"\"\"\n    # First try to find user by JupyterHub username (direct match)\n    user = handler.db.query(orm.User).filter_by(name=user_name).first()\n    if user:\n\
+        \        return user.name\n\n    # If not found, try to find by xnat_username field\n    user = handler.db.query(orm.User).filter_by(xnat_username=user_name).first()\n    if user:\n        return user.name\n\n    # If still not found, normalize the username and return\n    # This handles cases where XNAT sends username without aaf_ prefix\n    normalized = normalize_username(user_name)\n    return normalized\n\n# Wrap UserAPIHandler methods to support XNAT username mapping\noriginal_user_get = UserAPIHandler.get\noriginal_user_post = UserAPIHandler.post\noriginal_user_delete = UserAPIHandler.delete\noriginal_user_patch = UserAPIHandler.patch\n\nasync def user_get_wrapper(self, user_name):\n    jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)\n    return await original_user_get(self, jupyterhub_username)\n\nasync def user_post_wrapper(self, user_name):\n    jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)\n    return await original_user_post(self, jupyterhub_username)\n\nasync def user_delete_wrapper(self, user_name):\n    jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)\n    return await original_user_delete(self, jupyterhub_username)\n\nasync def user_patch_wrapper(self, user_name):\n    jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)\n    return await original_user_patch(self, jupyterhub_username)\n\nUserAPIHandler.get = user_get_wrapper\nUserAPIHandler.post = user_post_wrapper\nUserAPIHandler.delete = user_delete_wrapper\nUserAPIHandler.patch = user_patch_wrapper\n\n# Wrap UserServerAPIHandler methods to support XNAT username mapping\noriginal_server_post = UserServerAPIHandler.post\noriginal_server_delete = UserServerAPIHandler.delete\n\nasync def server_post_wrapper(self, user_name, server_name=''):\n    jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)\n    return await original_server_post(self, jupyterhub_username, server_name)\n\nasync def server_delete_wrapper(self, user_name, server_name=''):\n    jupyterhub_username = map_xnat_to_jupyterhub_username(self, user_name)\n    return await original_server_delete(self, jupyterhub_username, server_name)\n\nUserServerAPIHandler.post = server_post_wrapper\nUserServerAPIHandler.delete = server_delete_wrapper\n"
+      03_xnat_pre_spawn_hook: "import json\n\nasync def pre_spawn_hook(spawner):\n    import requests\n    from requests.auth import HTTPBasicAuth\n    import os\n\n    # Use JupyterHub username (which equals XNAT username)\n    xnat_username = spawner.user.name\n\n    existing_volumes = getattr(spawner, 'volumes', {})\n    existing_mounts = getattr(spawner, 'volume_mounts', {})\n\n    if isinstance(existing_volumes, dict):\n        existing_volumes = list(existing_volumes.values())\n    if isinstance(existing_mounts, dict):\n        existing_mounts = list(existing_mounts.values())\n\n    if not next((v for v in existing_volumes if v.get('name') == 'cvmfs'), None):\n        spawner.log.error(\"CVMFS volume not found in configuration\")\n\n    xnat_volumes = [\n        {'name': 'xnat-gpfs', 'persistentVolumeClaim': {'claimName': 'xnat-gpfs'}},\n        {'name': 'shm', 'emptyDir': {'medium': 'Memory', 'sizeLimit': '2Gi'}}\n    ]\n\n    xnat_mounts = [{'name': 'shm', 'mountPath': '/dev/shm'}]\n\n    spawner.volumes = existing_volumes + xnat_volumes\n    spawner.volume_mounts = existing_mounts + xnat_mounts\n\n    init_script = f\"\"\"\n    set -e\n    echo \"[INIT] Starting workspace setup...\"\n    mkdir -p /data/xnat/workspaces/users\n\n    if [ -d \"/data/xnat/workspaces/users/{xnat_username}\" ]; then\n        echo \"[INIT] Found XNAT workspace: {xnat_username}\"\n    else\n        mkdir -p \"/data/xnat/workspaces/users/{xnat_username}\"\n        chown 1000:100 \"/data/xnat/workspaces/users/{xnat_username}\"\n        chmod 755 \"/data/xnat/workspaces/users/{xnat_username}\"\n        echo \"[INIT] Created new workspace: {xnat_username}\"\n    fi\n\n    echo \"[INIT] Workspace setup complete\"\n    \"\"\"\n\n    spawner.init_containers = [\n        {\n            'name': 'workspace-setup',\n            'image': 'busybox:1.35',\n            'command': ['sh', '-c'],\n            'args': [init_script],\n            'volumeMounts': [{'name': 'xnat-gpfs', 'mountPath': '/data/xnat'}],\n            'securityContext': {'runAsUser': 0, 'appArmorProfile': {'type': 'Unconfined'}}\n        },\n        {\n            'name': 'install-xnat-extension',\n            'image': 'python:3.11-slim',\n            'securityContext': {'appArmorProfile': {'type': 'Unconfined'}},\n            'command': ['sh', '-c'],\n            'args': ['''\n                set -e\n                echo \"[XNAT Extension] Installing extension and dependencies...\"\n                pip install --quiet --target=/xnat-ext/deps xnat requests fileformats fileformats-medimage\n                mkdir -p /xnat-ext/xnat_upload_extension\n                cp /opt/xnat-upload-extension/__init__.py /xnat-ext/xnat_upload_extension/\n                cp /opt/xnat-upload-extension/handlers.py /xnat-ext/xnat_upload_extension/\n                chmod +x /opt/xnat-upload-extension/neurodesk_server.py 2>/dev/null || true\n                echo \"[XNAT Extension] Installation complete\"\n            '''],\n            'volumeMounts': [\n                {'name': 'xnat-upload-extension', 'mountPath': '/opt/xnat-upload-extension', 'readOnly': True},\n                {'name': 'xnat-ext-shared', 'mountPath': '/xnat-ext'}\n            ]\n        }\n    ]\n\n    workspace_mounts = [\n        {\n            'name': 'xnat-gpfs',\n            'mountPath': f'/data/xnat/workspaces/users/{xnat_username}',\n            'subPath': f'workspaces/users/{xnat_username}',\n            'readOnly': False\n        },\n        {\n            'name': 'xnat-gpfs',\n            'mountPath': f'/workspace/{xnat_username}',\n            'subPath': f'workspaces/users/{xnat_username}',\n            'readOnly': False\n        }\n    ]\n\n    spawner.volume_mounts.extend(workspace_mounts)\n    spawner.working_dir = f'/workspace/{xnat_username}'\n\n    # Set XNAT_USERNAME environment variable for upload tool\n    spawner.environment['XNAT_USERNAME'] = xnat_username\n\n    try:\n        xnat_host = os.getenv('XNAT_HOST', 'xnat-web.ais-xnat.svc.cluster.local')\n\
+        \        xnat_user = os.getenv('XNAT_USER', 'admin')\n        xnat_pass = os.getenv('XNAT_PASSWORD', 'admin')\n\n        response = requests.get(\n            f\"http://{xnat_host}/xapi/jupyterhub/users/{xnat_username}/server/user-options\",\n            auth=HTTPBasicAuth(xnat_user, xnat_pass),\n            timeout=5\n        )\n\n        if response.status_code == 200:\n            options = response.json()\n            task_template = options.get('task_template', {})\n\n            placement = task_template.get('placement', {})\n            constraints = placement.get('constraints', [])\n            if constraints:\n                spawner.node_selector = {i.split('==')[0]: i.split('==')[-1] for i in constraints}\n\n            resources = task_template.get('resources', {})\n            if resources.get('cpu_limit'):\n                spawner.cpu_limit = resources['cpu_limit']\n            if resources.get('cpu_reservation'):\n                spawner.cpu_guarantee = resources['cpu_reservation']\n            if resources.get('mem_limit'):\n                spawner.mem_limit = resources['mem_limit']\n            if resources.get('mem_reservation'):\n                spawner.mem_guarantee = resources['mem_reservation']\n\n            generic_resources = resources.get('generic_resources', {})\n            if generic_resources:\n                if 'gpu' in generic_resources:\n                    generic_resources['nvidia.com/gpu'] = generic_resources.pop('gpu')\n                spawner.extra_resource_guarantees = generic_resources\n                spawner.extra_resource_limits = generic_resources\n\n            container_spec = task_template.get('container_spec', {})\n            image = container_spec.get('image')\n            if image:\n                spawner.image = image\n                spawner.image_pull_policy = 'IfNotPresent'\n\n            command = container_spec.get('command')\n            if command:\n                spawner.cmd = command.split(' ')\n\n            env = container_spec.get('env', {})\n            filtered_env = {\n                k: v for k, v in env.items()\n                if k not in ['JUPYTERHUB_ROOT_DIR', 'XDG_CONFIG_HOME']\n            }\n            spawner.environment.update(filtered_env)\n\n            mounts = container_spec.get('mounts', [])\n            for mount in mounts:\n                source = mount.get('source', '')\n                target = mount.get('target', '')\n                read_only = mount.get('read_only', True)\n\n                if 'workspaces' in source or not source.startswith('/data/xnat/'):\n                    continue\n\n                subpath = source[len('/data/xnat/'):]\n                xnat_mount = {\n                    'name': 'xnat-gpfs',\n                    'mountPath': target,\n                    'subPath': subpath,\n                    'readOnly': read_only\n                }\n                spawner.volume_mounts.append(xnat_mount)\n        else:\n            spawner.log.warning(f\"XNAT API returned status {response.status_code}\")\n\n    except Exception as e:\n        spawner.log.warning(f\"XNAT API error: {e}\")\n\nc.KubeSpawner.pre_spawn_hook = pre_spawn_hook\n"
+    extraEnv:
+      JUPYTERHUB_CRYPT_KEY_HEX: ''
+      OIDC_PROVIDER_PREFIX: aaf
+      XNAT_HOST: xnat-web.ais-xnat.svc.cluster.local
+      XNAT_PASSWORD: ''
+      XNAT_USER: admin
+    loadRoles:
+      user-cull:
+        scopes:
+        - list:users
+        - read:users:activity
+        - read:servers
+        - delete:servers
+        - admin:users
+        services:
+        - user-cull
+    services:
+      user-cull:
+        command:
+        - python3
+        - -m
+        - jupyterhub_idle_culler
+        - --timeout=86400
+        - --cull-every=3600
+        - --cull-users
+        - --url=http://localhost:8081/jupyter/hub/api
+      xnat-service:
+        admin: true
+        apiToken: ''
+  ingress:
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: '0'
+      nginx.ingress.kubernetes.io/proxy-read-timeout: '600'
+      nginx.ingress.kubernetes.io/proxy-send-timeout: '600'
+    enabled: true
+    hosts:
+    - xnat-test.ssdsorg.cloud.edu.au
+    ingressClassName: nginx
+    pathType: Prefix
+    tls: []
+  prePuller:
+    continuous:
+      enabled: false
+    hook:
+      enabled: false
+  proxy:
+    service:
+      type: ClusterIP
+  scheduling:
+    podPriority:
+      enabled: false
+    userPlaceholder:
+      enabled: false
+    userScheduler:
+      enabled: false
+  singleuser:
+    cpu:
+      guarantee: 1
+      limit: 4
+    defaultUrl: /lab
+    extraEnv:
+      JUPYTER_ENABLE_LAB: 'yes'
+      XNAT_URL: http://xnat-web.ais-xnat.svc.cluster.local
+    extraFiles:
+      internal_culling_config:
+        mountPath: /etc/jupyter/jupyter_server_config.py
+        stringData: "c.ServerApp.shutdown_no_activity_timeout = 7200\nc.MappingKernelManager.cull_idle_timeout = 5400\nc.MappingKernelManager.cull_interval = 600\nc.MappingKernelManager.cull_connected = True\nc.MappingKernelManager.cull_busy = False\nc.TerminalManager.cull_inactive_timeout = 7200\nc.TerminalManager.cull_interval = 600\n\nimport logging\nlogging.getLogger('ServerApp').setLevel(logging.INFO)\n\n# XNAT Upload Extension - load from init container shared volume\nimport sys\nimport os\n# Add extension and dependencies to path\next_path = '/xnat-ext'\ndeps_path = '/xnat-ext/deps'\nif os.path.exists(deps_path) and deps_path not in sys.path:\n    sys.path.insert(0, deps_path)\nif os.path.exists(ext_path) and ext_path not in sys.path:\n    sys.path.insert(0, ext_path)\nc.ServerApp.jpserver_extensions.update({'xnat_upload_extension': True})\n\n# ServerProxy configuration for XNAT Upload launcher icon\n# Use update() to preserve existing ServerProxy servers (RStudio, etc.)\nif not hasattr(c.ServerProxy, 'servers') or c.ServerProxy.servers is None:\n    c.ServerProxy.servers = {}\nc.ServerProxy.servers.update({\n    'xnat-upload': {\n        'command': ['python3', '/opt/xnat-upload-extension/neurodesk_server.py', '--port', '{port}'],\n        'port': 5050,\n        'timeout': 30,\n        'launcher_entry': {\n            'enabled': True,\n            'title': 'XNAT Upload',\n            'icon_path': '/opt/xnat-upload-extension/xnat_icon.svg'\n        }\n    }\n})\n"
+    extraPodConfig:
+      terminationGracePeriodSeconds: 10
+    image:
+      name: ghcr.io/neurodesk/neurodesktop/neurodesktop
+      pullPolicy: IfNotPresent
+      tag: '2026-01-28'
+    memory:
+      guarantee: 1G
+      limit: 8G
+    networkPolicy:
+      egress:
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ais-xnat
+      enabled: true
+    storage:
+      capacity: 10Gi
+      dynamic:
+        pvcNameTemplate: jupyter-{username}
+        storageAccessModes:
+        - ReadWriteOnce
+        storageClass: longhorn
+        volumeNameTemplate: jupyter-{username}
+      extraVolumeMounts:
+      - mountPath: /cvmfs
+        mountPropagation: HostToContainer
+        name: cvmfs
+      - mountPath: /opt/xnat-upload-extension
+        name: xnat-upload-extension
+        readOnly: true
+      - mountPath: /xnat-ext
+        name: xnat-ext-shared
+      extraVolumes:
+      - name: cvmfs
+        persistentVolumeClaim:
+          claimName: cvmfs
+      - configMap:
+          defaultMode: 493
+          name: xnat-upload-extension
+        name: xnat-upload-extension
+      - emptyDir: {}
+        name: xnat-ext-shared
+      homeMountPath: /home/jovyan
+      type: dynamic
