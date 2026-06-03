@@ -1,5 +1,5 @@
 #!/bin/bash
-# 7-monitoring.sh - Setup Prometheus Stack for CVMFS Metrics Monitoring
+# 5-monitoring.sh - Setup Prometheus Stack for CVMFS Metrics Monitoring
 # Supports both MicroK8s and k3s environments
 set -e
 

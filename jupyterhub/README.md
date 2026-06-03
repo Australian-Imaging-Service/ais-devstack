@@ -4,6 +4,20 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 
 (Do a quick complete install by using: `./INSTALL.sh`)
 
+> **⚠️ CONSOLIDATED (neurodesk chart):** The JupyterHub application layer —
+> JupyterHub, CVMFS + smarter-device-manager, the Security Profiles Operator +
+> AppArmor profile, and the XNAT notebook upload-extension — is now installed by
+> a **single Helm chart** in [`neurodesk/`](neurodesk/) instead of the old
+> numbered scripts. The replaced files (`5-jupyterhub-values.yaml.template`,
+> `6-cvmfs-mounts.sh`, `8-security-setup.sh`, `9-install-jupyterhub.sh`,
+> `10-xnat-upload-extension.yaml`, `cvmfs_mount/`, `security/`, `../squid/`)
+> were removed. **Infrastructure is unchanged** — Longhorn (`2-`), NFS (`3-`/`4-`
+> + `../nfs-server/`), monitoring (`5-`), and the XNAT server + its server-side
+> plugin (`7-` + the `.jar`) install exactly as before. `INSTALL.sh` now wires
+> infra (old way) → `neurodesk/install.sh` (the chart). See
+> [`neurodesk/README.md`](neurodesk/README.md). The "Installation Steps" section
+> below is the legacy per-component flow, kept for reference.
+
 
 **Important Note:** Replace `<username>`, `<jupyter-token>`, and domain names with your actual deployment values.
 
@@ -175,205 +189,59 @@ Complete integration of JupyterHub with XNAT on Kubernetes.
 
 ## 🚀 Installation Steps
 
-### Step 0: Pre-Installation Check
+> The JupyterHub application layer is now **one Helm chart** (`neurodesk/`). The
+> old per-component scripts (`5`/`6`/`8`/`9`/`10`) were removed. Run the whole
+> flow with `./INSTALL.sh`, or the steps individually below.
 
-Verify XNAT is running:
-```bash
-kubectl get pods -n ais-xnat
-# Should show: xnat-web-0 (2/2 Running)
-```
+### Prerequisites (XNAT foundation — from `../scripts/`)
 
-Verify NFS server is accessible:
-```bash
-kubectl get pods -n storage
-# Should show: nfs-server-XXXXX (1/1 Running)
-```
-
-### Step 1: Cleanup Existing Installation
+XNAT, the NFS server, ingress-nginx and cert-manager must already be installed
+(`../scripts/install.sh`). Verify:
 
 ```bash
-chmod +x 1-cleanup.sh
-./1-cleanup.sh
+kubectl get pods -n ais-xnat       # xnat-web-0   (2/2 Running)
+kubectl get pods -n storage        # nfs-server-* (1/1 Running)
 ```
 
-This removes:
-- Old JupyterHub installation
-- Old Longhorn installation
-- Security Profiles Operator
-- CVMFS CSI driver
-- Orphaned PVCs and PVs
-- jupyter, security, and cvmfs namespaces
-
-**Wait for cleanup to complete before proceeding.**
-
-### Step 2: Install Longhorn
+### Quick install
 
 ```bash
-chmod +x 2-install-longhorn.sh
-./2-install-longhorn.sh
+./INSTALL.sh
 ```
 
-Longhorn provides:
-- Dynamic PVC provisioning
-- Storage replication
-- Snapshot capabilities
-- Volume management UI
-- Automatic BackupTarget configuration
+### Step-by-step
 
-**Expected time:** 3-5 minutes
+| Step | Command | Installs |
+| --- | --- | --- |
+| 1 | `./1-cleanup.sh` (optional) | Tear down a previous JH layer (+ Longhorn/monitoring) |
+| 2 | `./2-install-longhorn.sh` | Longhorn storage (hub DB + user homes) |
+| 3 | `kubectl apply -f 3-nfs-pv.yaml` | NFS PV `jupyter-xnat-gpfs-shared` |
+| 4 | `kubectl apply -f 4-nfs-pvc.yaml` | NFS PVC `xnat-gpfs` in `jupyter` (XNAT <-> notebook bridge) |
+| 5 | `./5-monitoring.sh` | Prometheus / Grafana stack |
+| 6 | `./6-install-neurodesk.sh` | **JupyterHub layer (neurodesk chart):** JupyterHub + CVMFS + smarter-device-manager + SPO + AppArmor + XNAT notebook extension |
+| 7 | `./7-xnat-jupyter-plugin.sh` (optional) | Refresh the XNAT server-side JupyterHub plugin |
 
-### Step 3: Create Jupyter Namespace
+### Step 6 — the neurodesk chart (one-time values setup)
 
 ```bash
-kubectl create namespace jupyter
+cd neurodesk
+cp values-devstack.yaml.template values-devstack.yaml
+# fill in the secrets: OIDC client_id/secret, xnat-service apiToken, JUPYTERHUB_CRYPT_KEY_HEX
+cd ..
+./6-install-neurodesk.sh           # clones the chart, resolves deps, helm install into `jupyter`
 ```
 
-### Step 4: Create NFS PersistentVolume
-```bash
-kubectl apply -f 3-nfs-pv.yaml
-```
+`neurodesk/values-devstack.yaml` is gitignored (it holds secrets). See
+[`neurodesk/README.md`](neurodesk/README.md) for the chart details, component
+toggles, and how the values map to the chart.
 
-Creates one PV:
-- `jupyter-xnat-gpfs-shared` → Points to `/gpfs` on NFS for XNAT workspaces and project data
-
-### Step 5: Create NFS PersistentVolumeClaim
-```bash
-kubectl apply -f 4-nfs-pvc.yaml
-```
-
-Creates one PVC in the jupyter namespace:
-- `xnat-gpfs` → Binds to `jupyter-xnat-gpfs-shared` PV for mounting XNAT workspaces and project data
-
-Verify binding:
-```bash
-kubectl get pvc -n jupyter
-# Should show STATUS: Bound
-```
-
-### Step 6: Install CVMFS CSI Driver and Metrics
+### Uninstall
 
 ```bash
-chmod +x 6-cvmfs-mounts.sh
-./6-cvmfs-mounts.sh
+./UNINSTALL.sh                     # JupyterHub layer only (keeps infra + XNAT)
+# or ./1-cleanup.sh                # full infra teardown (Longhorn + monitoring), still keeps XNAT
 ```
 
-This installs:
-- CVMFS CSI driver for scientific software repositories
-- smarter-device-manager for FUSE device access
-- Node labels for device management
-- CVMFS StorageClass configuration
-- CVMFS trace parser for metrics collection
-- Telegraf for InfluxDB to Prometheus conversion
-- ServiceMonitor for Prometheus scraping
-
-**Expected time:** 2-3 minutes
-
-Verify:
-```bash
-kubectl get pods -n mounts -l app=smarter-device-manager
-# Should show DaemonSet pods running on all nodes
-
-kubectl get pods -n mounts -l app=cvmfs-trace-parser
-# Should show trace parser pod running
-```
-
-### Step 7: Install Prometheus Monitoring Stack
-
-```bash
-chmod +x 7-monitoring.sh
-./7-monitoring.sh
-```
-
-This installs:
-- Prometheus for metrics collection
-- Grafana for visualization (accessible at NodePort 31000)
-- AlertManager for alerting
-- ServiceMonitor discovery from all namespaces
-
-**Expected time:** 5-10 minutes
-
-Verify:
-```bash
-kubectl get pods -n monitoring
-# Should show prometheus, grafana, alertmanager pods running
-```
-
-Access Grafana:
-- URL: `http://<node-ip>:31000`
-- Default credentials: admin / admin
-
-### Step 8: Install Security Profiles Operator
-
-```bash
-chmod +x 8-security-setup.sh
-./8-security-setup.sh
-```
-
-This installs:
-- Security Profiles Operator (neurodesk fork with AppArmor support)
-- AppArmor profile for notebook containers
-- Automatic profile loading and enforcement
-
-**Expected time:** 2-3 minutes
-
-Verify AppArmor profile is ready:
-```bash
-kubectl get apparmorprofile -n security
-# Should show: notebook   Installed   True
-```
-
-### Step 9: Install JupyterHub
-
-```bash
-chmod +x 9-install-jupyterhub.sh
-./9-install-jupyterhub.sh
-```
-
-This installs:
-- JupyterHub Hub (with custom pre_spawn_hook)
-- Configurable HTTP Proxy
-- User notebook spawner
-- AAF OAuth configuration
-- AppArmor profile enforcement
-- CVMFS mount configuration
-
-**Expected time:** 5-10 minutes
-
-### Step 10: Verify Installation
-
-Manual verification checks:
-```bash
-# Check JupyterHub
-kubectl get pods -n jupyter
-
-# Check Security Profiles
-kubectl get apparmorprofile -n security
-
-# Check CVMFS
-kubectl get pods -n mounts -l app=smarter-device-manager
-kubectl get pods -n mounts -l component=nodeplugin
-
-# Check Longhorn
-kubectl get pods -n longhorn-system
-```
-
-**All components should be running before proceeding.**
-
-### Step 11: Configure XNAT Plugin
-
-Follow detailed guide in `XNAT-CONFIGURATION.md`:
-
-1. Login to XNAT admin interface
-2. Configure JupyterHub connection settings
-3. Set up compute environments
-4. Enable JupyterHub for projects
-5. Test user workflow
-
-**Required Settings:**
-- JupyterHub URL: `http://proxy-public.jupyter.svc.cluster.local/jupyter`
-- Service Token: `<generated-service-token>`
-
----
 
 ## ⚙️ Configuration
 
@@ -682,24 +550,23 @@ This integration follows the licenses of its components:
 
 Use this checklist to track your installation:
 
-- [ ] Prerequisites verified
-- [ ] Cleanup completed (`1-cleanup.sh`)
+- [ ] Prerequisites verified (XNAT + nfs-server running)
+- [ ] Cleanup completed if needed (`1-cleanup.sh`)
 - [ ] Longhorn installed (`2-install-longhorn.sh`)
 - [ ] Jupyter namespace created
-- [ ] NFS PVs created (`3-nfs-pv.yaml`)
-- [ ] NFS PVC created and bound (`4-nfs-pvc.yaml`)
-- [ ] CVMFS CSI driver and metrics installed (`6-cvmfs-mounts.sh`)
-- [ ] Prometheus monitoring stack installed (`7-monitoring.sh`)
-- [ ] Security Profiles Operator installed (`8-security-setup.sh`)
-- [ ] AppArmor profile verified (status: Installed)
-- [ ] JupyterHub installed (`9-install-jupyterhub.sh`)
-- [ ] All components verified (JupyterHub, Security, CVMFS, Longhorn, Monitoring)
+- [ ] NFS PV created (`3-nfs-pv.yaml`)
+- [ ] NFS PVC `xnat-gpfs` created and bound (`4-nfs-pvc.yaml`)
+- [ ] Prometheus monitoring stack installed (`5-monitoring.sh`)
+- [ ] `neurodesk/values-devstack.yaml` created from template (secrets filled in)
+- [ ] JupyterHub layer installed via the chart (`6-install-neurodesk.sh`)
+- [ ] All chart pods Running (hub, proxy, cvmfs-csi, smarter-device-manager, SPO, spod)
+- [ ] SPO running the neurodesk fork image (`ghcr.io/neurodesk/security-profiles-operator`)
+- [ ] AppArmor `notebook` profile loaded on nodes
+- [ ] CVMFS mount verified in a pod (`/cvmfs/neurodesk.ardc.edu.au`)
+- [ ] XNAT extension ConfigMap present (`xnat-upload-extension`)
+- [ ] XNAT server-side plugin refreshed (`7-xnat-jupyter-plugin.sh`, optional)
 - [ ] XNAT plugin configured (`XNAT-CONFIGURATION.md`)
-- [ ] XNAT upload extension deployed (`10-xnat-upload-extension.yaml`)
-- [ ] Test user workflow completed
-- [ ] AppArmor enforcement verified in user pods
-- [ ] CVMFS mount verified in user pods
-- [ ] CVMFS metrics verified in Prometheus
+- [ ] Test user workflow completed (interactive AAF spawn)
 - [ ] Production settings reviewed
 
 ---
