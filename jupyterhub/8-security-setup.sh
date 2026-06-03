@@ -136,7 +136,7 @@ $KUBECTL wait --for=condition=ready pod -l name=spod -n security --timeout=300s
 # Ensure AppArmor CRD exists (Helm may silently skip it during install)
 if ! $KUBECTL get crd apparmorprofiles.security-profiles-operator.x-k8s.io &>/dev/null; then
     echo -e "${YELLOW}AppArmor CRD not found, applying CRDs manually...${NC}"
-    $KUBECTL apply -f https://raw.githubusercontent.com/Edan-Hamilton/security-profiles-operator/neurodesk/deploy/helm/crds/crds.yaml
+    $KUBECTL apply -f https://raw.githubusercontent.com/neurodesk/security-profiles-operator/neurodesk/deploy/helm/crds/crds.yaml
 fi
 
 # Apply AppArmor profile
