@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 NAMESPACE="${NAMESPACE:-jupyter}"
 RELEASE="${RELEASE:-neurodesk}"
-CHART_REPO="${CHART_REPO:-https://github.com/neurodesk/neurodesk-interactive-helm-chart}"
+CHART_REPO="${CHART_REPO:-https://github.com/neurodesk/helm-chart}"
 CHART_REF="${CHART_REF:-main}"
 CHART_PATH="${CHART_PATH:-}"            # set to a local chart checkout to skip cloning
 VALUES="${VALUES:-$SCRIPT_DIR/values-devstack.yaml}"

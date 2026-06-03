@@ -2,7 +2,7 @@
 
 This directory replaces the old multi-step, multi-chart way of installing the
 JupyterHub application layer with **one** chart:
-[`neurodesk/neurodesk-interactive-helm-chart`](https://github.com/neurodesk/neurodesk-interactive-helm-chart).
+[`neurodesk/helm-chart`](https://github.com/neurodesk/helm-chart).
 
 ## What the chart now owns (was: separate scripts)
 
