@@ -387,18 +387,39 @@ echo ""
 
 # Prompt for JupyterHub installation
 echo -e "${BLUE}=========================================="
-echo "   Optional: JupyterHub Integration"
+echo "   Optional: JupyterHub Integration (neurodesk chart)"
 echo "==========================================${NC}"
 echo ""
 echo "JupyterHub provides interactive Jupyter notebooks integrated with XNAT."
+echo "It is now installed by the consolidated jupyterhub/INSTALL.sh flow:"
+echo "  Longhorn + NFS workspace + monitoring (infra) -> the single neurodesk"
+echo "  Helm chart (JupyterHub + CVMFS + smarter-device-manager + Security"
+echo "  Profiles Operator + AppArmor + the XNAT notebook upload extension)."
 echo ""
-read -p "Install JupyterHub? (y/N): " install_jupyterhub
+JH_DIR="$BASE_DIR/jupyterhub"
+JH_INSTALL="$JH_DIR/INSTALL.sh"
+JH_VALUES="$JH_DIR/neurodesk/values-devstack.yaml"
+JH_TEMPLATE="$JH_DIR/neurodesk/values-devstack.yaml.template"
+read -p "Install JupyterHub now? (y/N): " install_jupyterhub
 if [[ "$install_jupyterhub" =~ ^[Yy]$ ]]; then
+    if [ ! -f "$JH_VALUES" ]; then
+        echo ""
+        echo -e "${YELLOW}JupyterHub needs its values file (with your secrets) first:${NC}"
+        echo "  cp $JH_TEMPLATE \\"
+        echo "     $JH_VALUES"
+        echo "  # then edit it: OIDC client_id/secret, xnat-service apiToken, JUPYTERHUB_CRYPT_KEY_HEX"
+        echo ""
+        read -p "Continue without it (the installer will stop until it exists)? (y/N): " cont
+        [[ "$cont" =~ ^[Yy]$ ]] || { echo "Create the values file, then run: cd jupyterhub && ./INSTALL.sh"; exit 0; }
+    fi
     echo ""
-    "$SCRIPT_DIR/install-jupyterhub.sh"
+    chmod +x "$JH_INSTALL"
+    (cd "$JH_DIR" && ./INSTALL.sh)
 else
     echo ""
-    echo "You can install JupyterHub later by running:"
-    echo "  ./scripts/install-jupyterhub.sh"
+    echo "You can install JupyterHub later:"
+    echo "  cd $JH_DIR"
+    echo "  cp neurodesk/values-devstack.yaml.template neurodesk/values-devstack.yaml   # fill in secrets"
+    echo "  ./INSTALL.sh"
     echo ""
 fi

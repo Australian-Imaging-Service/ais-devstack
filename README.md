@@ -25,15 +25,15 @@ ais-devstack/
 │   └── values.yaml              # NFS server Helm chart values
 ├── plugins/
 │   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
-├── jupyterhub/                  # JupyterHub integration (git subtree)
-│   ├── INSTALL.sh               # JupyterHub orchestrator
-│   ├── 5-jupyterhub-values.yaml.template  # JupyterHub config template
+├── jupyterhub/                  # JupyterHub layer (one neurodesk Helm chart)
+│   ├── INSTALL.sh               # JupyterHub orchestrator (infra + chart)
+│   ├── UNINSTALL.sh             # JupyterHub uninstall
+│   ├── 6-install-neurodesk.sh   # wrapper -> neurodesk/install.sh
+│   ├── neurodesk/               # the consolidated chart + devstack values
 │   └── ...                      # See jupyterhub/README.md
 └── scripts/
-    ├── install.sh               # XNAT install (prompts for JupyterHub)
-    ├── install-jupyterhub.sh    # JupyterHub installation
-    ├── uninstall.sh             # XNAT uninstallation
-    └── uninstall-jupyterhub.sh  # JupyterHub uninstallation
+    ├── install.sh               # XNAT install (then prompts for JupyterHub)
+    └── uninstall.sh             # XNAT uninstallation
 ```
 
 ## Quick Start
@@ -401,15 +401,19 @@ Install JupyterHub? (y/N): y
 
 **Option 2:** Install separately after XNAT is running:
 ```bash
-./scripts/install-jupyterhub.sh
+cd jupyterhub
+cp neurodesk/values-devstack.yaml.template neurodesk/values-devstack.yaml   # fill in secrets
+./INSTALL.sh
 ```
 
-The install script automatically reads the domain from `manifests/values.yaml` and configures JupyterHub to use the same domain.
+The JupyterHub layer is the consolidated `neurodesk` Helm chart (see
+`jupyterhub/neurodesk/README.md`). `INSTALL.sh` installs the infra it needs
+(Longhorn, the NFS workspace, monitoring) and then the chart.
 
 ### Uninstall JupyterHub
 
 ```bash
-./scripts/uninstall-jupyterhub.sh
+cd jupyterhub && ./UNINSTALL.sh        # JupyterHub layer only (keeps infra + XNAT)
 ```
 
 ### Update JupyterHub from Upstream
