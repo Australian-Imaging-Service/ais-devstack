@@ -45,6 +45,7 @@ log "Found ${SESSION_COUNT} sessions to back up"
 
 BACKED_UP=0
 FAILED=0
+EXIT_STATUS=0
 
 # Use process substitution to avoid subshell counter issue
 while IFS=$'\t' read -r project label session_id; do
@@ -96,6 +97,9 @@ while IFS=$'\t' read -r project label session_id; do
 done < <(echo "$SESSIONS_JSON" | jq -r '.ResultSet.Result[] | [.project, .label, .ID] | @tsv')
 
 log "Backup complete: ${BACKED_UP} synced, ${FAILED} failures"
+if [ "$FAILED" -gt 0 ] && [ "${ARCHIVER_FAIL_ON_SESSION_ERRORS:-1}" != "0" ]; then
+    EXIT_STATUS=1
+fi
 
 # ── Database dump ──────────────────────────────────────────────────
 if [ -n "$DB_PASS" ]; then
@@ -112,6 +116,7 @@ if [ -n "$DB_PASS" ]; then
             xargs -r gsutil rm 2>/dev/null || true
     else
         log "WARN: Database dump failed (pg_dump version may not match server)"
+        EXIT_STATUS=1
     fi
     unset PGPASSWORD
 else
@@ -125,3 +130,4 @@ curl -sf -b "JSESSIONID=${JSESSION}" -X DELETE "${XNAT_URL}/data/JSESSION" 2>/de
 rm -rf "$WORK_DIR"
 
 log "=== Done ==="
+exit "$EXIT_STATUS"

@@ -1,7 +1,7 @@
-# ConfigMap: XNAT archive path to NFS subPath mapping
+# ConfigMap: XNAT archive path to shared local-storage subPath mapping
 # ====================================================
 # Maps XNAT container-internal mount paths to the actual NFS subPaths
-# on the xnat-gpfs volume (NFS share /gpfs).
+# on the xnat-gpfs volume (/srv/xnat-local-storage/gpfs on xnat-host).
 #
 # XNAT's JupyterHub plugin returns mount sources as container-internal
 # paths (e.g., /data/xnat/archive/proj_1). These do NOT correspond to
@@ -30,6 +30,13 @@ metadata:
 data:
   mount-mapping.json: |
     {
+      "/data/xnat/archive/DM_R01": "archive/DM_R01",
+      "/data/xnat/archive/NF1": "archive/NF1",
+      "/data/xnat/archive/ennis": "archive/ennis",
+      "/data/xnat/archive/goo": "archive/goo",
+      "/data/xnat/archive/misc": "archive/misc",
+      "/data/xnat/archive/nf": "archive/nf",
+      "/data/xnat/archive/openrecon": "archive/openrecon",
       "/data/xnat/archive/proj_1": "uq01/pool01/proj_1/xnat",
       "/data/xnat/archive/proj_2": "uq02/pool02/proj_2/xnat",
       "/data/xnat/archive/test": "test/xnat"

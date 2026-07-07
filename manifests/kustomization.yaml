@@ -1,5 +1,6 @@
 # Kustomization for XNAT StatefulSet patches
-# Adds custom NFS volume mounts for archive, prearchive, build, and plugins
+# Adds custom local-PV volume mounts for archive, prearchive, build, plugins,
+# and the host Docker socket used by XNAT Container Service.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -21,6 +22,27 @@ patches:
                   - mountPath: /data/xnat/prearchive
                     name: xnat-nfs
                     subPath: data/prearchive
+                  - mountPath: /data/xnat/archive/DM_R01
+                    name: xnat-gpfs
+                    subPath: archive/DM_R01
+                  - mountPath: /data/xnat/archive/NF1
+                    name: xnat-gpfs
+                    subPath: archive/NF1
+                  - mountPath: /data/xnat/archive/ennis
+                    name: xnat-gpfs
+                    subPath: archive/ennis
+                  - mountPath: /data/xnat/archive/goo
+                    name: xnat-gpfs
+                    subPath: archive/goo
+                  - mountPath: /data/xnat/archive/misc
+                    name: xnat-gpfs
+                    subPath: archive/misc
+                  - mountPath: /data/xnat/archive/nf
+                    name: xnat-gpfs
+                    subPath: archive/nf
+                  - mountPath: /data/xnat/archive/openrecon
+                    name: xnat-gpfs
+                    subPath: archive/openrecon
                   - mountPath: /data/xnat/archive/proj_1
                     name: xnat-gpfs
                     subPath: uq01/pool01/proj_1/xnat
@@ -43,6 +65,8 @@ patches:
                     name: init
                     readOnly: true
                     subPath: init.sh
+                  - mountPath: /var/run/docker.sock
+                    name: docker-sock
             initContainers:
               - name: home-init
                 command:
@@ -77,3 +101,7 @@ patches:
                   items:
                     - key: init.sh
                       path: init.sh
+              - name: docker-sock
+                hostPath:
+                  path: /var/run/docker.sock
+                  type: Socket

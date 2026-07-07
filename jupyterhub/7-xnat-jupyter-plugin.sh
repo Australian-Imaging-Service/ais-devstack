@@ -12,15 +12,14 @@ export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
 echo "[1/4] Downloading plugin..."
 wget -q https://github.com/NrgXnat/xnat-jupyterhub-plugin/releases/download/v1.3.3/xnat-jupyterhub-plugin-1.3.3.jar
 
-# Get NFS server pod name dynamically
-echo "[2/4] Finding NFS server pod..."
-NFS_POD=$(kubectl -n storage get pods -l role=nfs-server -o jsonpath='{.items[0].metadata.name}')
-echo "Found NFS pod: $NFS_POD"
+# Ensure local XNAT plugin directory exists
+echo "[2/4] Preparing local XNAT plugin directory..."
+sudo mkdir -p /srv/xnat-local-storage/xnat/plugins
 
 # Copy to XNAT plugins directory
-echo "[3/4] Copying plugin to NFS..."
- kubectl -n storage cp xnat-jupyterhub-plugin-1.3.3.jar \
-  $NFS_POD:/exports/xnat/plugins/
+echo "[3/4] Copying plugin to local XNAT storage..."
+sudo cp xnat-jupyterhub-plugin-1.3.3.jar \
+  /srv/xnat-local-storage/xnat/plugins/
 
 # Restart XNAT to load plugin
 # !!!!Beware this will wipe any ephemeral data in XNAT pods

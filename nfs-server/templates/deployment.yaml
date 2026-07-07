@@ -31,6 +31,24 @@ spec:
             containerPort: 111
         securityContext:
           privileged: true
+        lifecycle:
+          postStart:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  threads="{{ .Values.nfsdThreads | default 32 }}"
+                  for i in $(seq 1 60); do
+                    current="$(cat /proc/fs/nfsd/threads 2>/dev/null || true)"
+                    if [ -n "$current" ] && [ "$current" -gt 0 ] 2>/dev/null; then
+                      /usr/sbin/rpc.nfsd "$threads" || true
+                      exit 0
+                    fi
+                    sleep 1
+                  done
+                  echo "Timed out waiting for nfsd before setting thread count" >&2
+                  exit 0
         volumeMounts:
           - mountPath: /exports
             name: nfs-exports

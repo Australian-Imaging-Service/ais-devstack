@@ -4,7 +4,7 @@ metadata:
   name: xnat-gpfs
   namespace: jupyter
 spec:
-  storageClassName: nfs-csi
+  storageClassName: local-xnat
   accessModes:
     - ReadWriteMany
   resources:

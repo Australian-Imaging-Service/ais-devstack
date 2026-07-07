@@ -24,16 +24,6 @@ if [ ! -f "$BASE_DIR/manifests/values.yaml" ]; then
     fi
 fi
 
-if [ ! -f "$BASE_DIR/nfs-server/values.yaml" ]; then
-    if [ -f "$BASE_DIR/nfs-server/values.yaml.template" ]; then
-        cp "$BASE_DIR/nfs-server/values.yaml.template" "$BASE_DIR/nfs-server/values.yaml"
-        echo "Created nfs-server/values.yaml from template"
-    else
-        echo -e "${RED}Error: nfs-server/values.yaml.template not found${NC}"
-        exit 1
-    fi
-fi
-
 echo -e "${BLUE}"
 echo "=========================================="
 echo "   AIS-XNAT Installation (k3s)"
@@ -126,12 +116,11 @@ echo ""
 
 # Extract current values
 VALUES_FILE="$BASE_DIR/manifests/values.yaml"
-NFS_VALUES_FILE="$BASE_DIR/nfs-server/values.yaml"
+LOCAL_STORAGE_ROOT="/srv/xnat-local-storage"
 
 CURRENT_HOST=$(grep -A1 "hosts:" "$VALUES_FILE" | grep "host:" | head -1 | awk '{print $3}')
 CURRENT_SITE_URL=$(grep "siteUrl:" "$VALUES_FILE" | head -1 | sed 's/.*siteUrl: *"\(.*\)"/\1/')
 CURRENT_DB_PASSWORD=$(grep -A5 "postgresql:" "$VALUES_FILE" | grep "password:" | head -1 | awk '{print $2}')
-CURRENT_NFS_SIZE=$(grep "size:" "$NFS_VALUES_FILE" | awk '{print $2}')
 CURRENT_OIDC_CLIENT_ID=$(grep "clientId:" "$VALUES_FILE" | head -1 | sed 's/.*clientId: *"\(.*\)"/\1/')
 CURRENT_OIDC_CLIENT_SECRET=$(grep "clientSecret:" "$VALUES_FILE" | head -1 | sed 's/.*clientSecret: *"\(.*\)"/\1/')
 
@@ -139,7 +128,7 @@ echo -e "${YELLOW}Current Configuration:${NC}"
 echo "  1. Ingress Host:          $CURRENT_HOST"
 echo "  2. Site URL:              $CURRENT_SITE_URL"
 echo "  3. DB Password:           $CURRENT_DB_PASSWORD"
-echo "  4. NFS Storage Size:      $CURRENT_NFS_SIZE"
+echo "  4. Local Storage Root:    $LOCAL_STORAGE_ROOT"
 echo "  5. Stanford OIDC Client:  $CURRENT_OIDC_CLIENT_ID"
 echo "  6. Stanford OIDC Secret:  ${CURRENT_OIDC_CLIENT_SECRET:0:8}..."
 echo ""
@@ -162,10 +151,6 @@ if [[ "$modify_config" =~ ^[Yy]$ ]]; then
     # DB Password
     read -p "PostgreSQL Password [$CURRENT_DB_PASSWORD]: " NEW_DB_PASSWORD
     NEW_DB_PASSWORD=${NEW_DB_PASSWORD:-$CURRENT_DB_PASSWORD}
-
-    # NFS Size
-    read -p "NFS Storage Size [$CURRENT_NFS_SIZE]: " NEW_NFS_SIZE
-    NEW_NFS_SIZE=${NEW_NFS_SIZE:-$CURRENT_NFS_SIZE}
 
     # Stanford OIDC Client ID
     read -p "Stanford OIDC Client ID [$CURRENT_OIDC_CLIENT_ID]: " NEW_OIDC_CLIENT_ID
@@ -195,12 +180,6 @@ if [[ "$modify_config" =~ ^[Yy]$ ]]; then
         sed -i "s/password: $CURRENT_DB_PASSWORD/password: $NEW_DB_PASSWORD/g" "$VALUES_FILE"
         sed -i "s/postgresqlPassword: $CURRENT_DB_PASSWORD/postgresqlPassword: $NEW_DB_PASSWORD/g" "$VALUES_FILE"
         echo "  Updated DB password"
-    fi
-
-    # Update nfs-server values.yaml - Size
-    if [ "$NEW_NFS_SIZE" != "$CURRENT_NFS_SIZE" ]; then
-        sed -i "s/size: $CURRENT_NFS_SIZE/size: $NEW_NFS_SIZE/g" "$NFS_VALUES_FILE"
-        echo "  Updated NFS storage size to: $NEW_NFS_SIZE"
     fi
 
     # Update values.yaml - Stanford OIDC Client ID
@@ -277,57 +256,27 @@ spec:
 ISSUER_EOF
 check_status $?
 
-# Step 5: Install NFS CSI Driver
-echo -e "${BLUE}[Step 5/10] Installing NFS CSI Driver...${NC}"
-helm repo add csi-driver-nfs https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts 2>/dev/null || true
-helm repo update
-
-# k3s kubelet path is /var/lib/kubelet (standard path)
-helm upgrade --install csi-driver-nfs csi-driver-nfs/csi-driver-nfs \
-  --namespace kube-system \
-  --set kubeletDir=/var/lib/kubelet
-
-# Wait for CSI driver pods
-echo "Waiting for NFS CSI driver pods..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=csi-driver-nfs -n kube-system --timeout=120s
+# Step 5: Prepare node-local XNAT storage
+echo -e "${BLUE}[Step 5/10] Preparing node-local XNAT storage...${NC}"
+sudo mkdir -p \
+  "$LOCAL_STORAGE_ROOT/gpfs/archive" \
+  "$LOCAL_STORAGE_ROOT/gpfs/workspaces/users" \
+  "$LOCAL_STORAGE_ROOT/xnat/data/build" \
+  "$LOCAL_STORAGE_ROOT/xnat/data/prearchive" \
+  "$LOCAL_STORAGE_ROOT/xnat/data/CONTAINER_EXEC" \
+  "$LOCAL_STORAGE_ROOT/xnat/plugins"
+sudo chgrp -R users "$LOCAL_STORAGE_ROOT/gpfs" 2>/dev/null || true
+sudo chmod 2775 "$LOCAL_STORAGE_ROOT/gpfs" "$LOCAL_STORAGE_ROOT/gpfs/archive" "$LOCAL_STORAGE_ROOT/gpfs/workspaces" "$LOCAL_STORAGE_ROOT/gpfs/workspaces/users"
 check_status $?
 
-# Step 5: Create storage namespace and install NFS server
-echo -e "${BLUE}[Step 6/10] Setting up NFS Server...${NC}"
-kubectl create namespace storage 2>/dev/null || echo "Namespace 'storage' already exists"
-
-# Check if nfs-server helm chart exists locally
-if [ -f "$BASE_DIR/nfs-server/Chart.yaml" ] || [ -d "$BASE_DIR/nfs-server" ]; then
-    helm upgrade --install nfs-server "$BASE_DIR/nfs-server" \
-      --namespace storage \
-      --values "$BASE_DIR/nfs-server/values.yaml"
-else
-    echo -e "${YELLOW}NFS server chart not found at $BASE_DIR/nfs-server${NC}"
-    echo "Please ensure you have the nfs-server helm chart"
-    echo "You can extract it from: tar -xzf nfs-server-0.1.0.tgz"
-    exit 1
-fi
-
-# Wait for NFS server pod to be ready
-echo "Waiting for NFS server pod to be ready..."
-kubectl wait --for=condition=ready pod -l app=nfs-server -n storage --timeout=300s
-check_status $?
-
-# Create NFS directories
-echo "Creating NFS export directories..."
-kubectl -n storage exec deploy/nfs-server -- mkdir -p \
-  /exports/gpfs /exports/xnat/data/build /exports/xnat/plugins
-check_status $?
-
-# Copy plugins to NFS server
-echo "Copying plugins to NFS server..."
+# Copy plugins to local XNAT storage
+echo "Copying plugins to local XNAT storage..."
 PLUGINS_DIR="$BASE_DIR/plugins"
 if [ -d "$PLUGINS_DIR" ] && [ "$(ls -A $PLUGINS_DIR/*.jar 2>/dev/null)" ]; then
-    NFS_POD=$(kubectl -n storage get pods -l app=nfs-server -o jsonpath='{.items[0].metadata.name}')
     for plugin in "$PLUGINS_DIR"/*.jar; do
         plugin_name=$(basename "$plugin")
         echo "  Copying $plugin_name..."
-        kubectl -n storage cp "$plugin" "$NFS_POD:/exports/xnat/plugins/$plugin_name"
+        sudo cp "$plugin" "$LOCAL_STORAGE_ROOT/xnat/plugins/$plugin_name"
     done
     check_status $?
 else
