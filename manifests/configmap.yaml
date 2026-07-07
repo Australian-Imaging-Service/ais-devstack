@@ -37,3 +37,245 @@ data:
       echo adding plugin ${src}/${short_name}*.jar
       cp ${src}/${short_name}*.jar ${dst}/
     done
+
+    patch_ohif_metadata_scan() {
+      local ohif_jar
+      ohif_jar=$(find /HOME-PLUGINS -maxdepth 1 -type f -name "ohif-viewer-*.jar" | sort | tail -n 1)
+      if [ -z "${ohif_jar}" ]; then
+        echo "OHIF metadata scan hotfix skipped: no ohif-viewer jar found"
+        return 0
+      fi
+      if ! command -v javac >/dev/null 2>&1 || ! command -v jar >/dev/null 2>&1; then
+        echo "OHIF metadata scan hotfix skipped: javac or jar not available"
+        return 0
+      fi
+
+      mkdir -p /tmp/ohif-hotfix/src/org/nrg/xnatx/ohifviewer/inputcreator /tmp/ohif-hotfix/classes
+      cat > /tmp/ohif-hotfix/src/org/nrg/xnatx/ohifviewer/inputcreator/CreateOhifViewerMetadata.java <<'JAVA'
+    package org.nrg.xnatx.ohifviewer.inputcreator;
+
+    import com.google.gson.Gson;
+    import com.google.gson.GsonBuilder;
+    import com.google.gson.stream.JsonWriter;
+    import icr.etherj.PathScan;
+    import icr.etherj.dicom.DicomToolkit;
+    import java.io.File;
+    import java.io.FileWriter;
+    import java.io.IOException;
+    import java.nio.file.FileVisitResult;
+    import java.nio.file.Files;
+    import java.nio.file.LinkOption;
+    import java.nio.file.Path;
+    import java.nio.file.Paths;
+    import java.nio.file.SimpleFileVisitor;
+    import java.nio.file.attribute.BasicFileAttributes;
+    import java.util.Arrays;
+    import java.util.HashSet;
+    import java.util.Locale;
+    import java.util.Map;
+    import java.util.Set;
+    import org.slf4j.Logger;
+    import org.slf4j.LoggerFactory;
+
+    public class CreateOhifViewerMetadata {
+        private static final Logger logger = LoggerFactory.getLogger(CreateOhifViewerMetadata.class);
+        private static final DicomToolkit dcmTk = DicomToolkit.getToolkit();
+        private static final long DEFAULT_MAX_SCAN_BYTES = 1073741824L;
+        private static final Set<String> DEFAULT_EXCLUDED_EXTENSIONS = new HashSet<String>(Arrays.asList(
+            "7z", "bval", "bvec", "bz2", "csv", "dat", "gz", "h5", "hdf5", "json",
+            "log", "mat", "md", "meas", "nii", "nii.gz", "pdf", "png", "raw", "tar",
+            "tgz", "tsv", "twix", "txt", "xml", "xz", "zip"
+        ));
+
+        private final String xnatScanPath;
+        private final String xnatExperimentScanUrl;
+        private final Map<String, String> seriesUidToScanIdMap;
+
+        public CreateOhifViewerMetadata(String xnatScanPath, String xnatExperimentScanUrl, Map<String, String> seriesUidToScanIdMap) {
+            this.xnatScanPath = xnatScanPath;
+            this.xnatExperimentScanUrl = xnatExperimentScanUrl;
+            this.seriesUidToScanIdMap = seriesUidToScanIdMap;
+        }
+
+        public Path jsonify(String transactionId) throws IOException {
+            OhifViewerInput input = scanPathAndCreateInput(transactionId, xnatScanPath, xnatExperimentScanUrl, seriesUidToScanIdMap);
+            Gson gson = new GsonBuilder().serializeSpecialFloatingPointValues().create();
+            Path output = Files.createTempFile("ohif", null);
+            logger.debug("Temp file named {} created for storing serialized JSON", output.toString());
+            try (JsonWriter writer = new JsonWriter(new FileWriter(output.toFile()))) {
+                gson.toJson(input, OhifViewerInput.class, writer);
+            }
+            return output;
+        }
+
+        private OhifViewerInput scanPathAndCreateInput(String transactionId, String xnatScanPath, String xnatExperimentScanUrl, Map<String, String> seriesUidToScanIdMap) throws IOException {
+            logger.info("DICOM search: {}", xnatScanPath);
+            CustomDicomReceiver receiver = new CustomDicomReceiver(transactionId, xnatExperimentScanUrl, seriesUidToScanIdMap);
+            PathScan scan = dcmTk.createPathScan();
+            scan.addContext(receiver);
+
+            Path filteredRoot = Files.createTempDirectory("ohif-dicom-scan-");
+            FilterStats stats = new FilterStats();
+            try {
+                createFilteredScanTree(Paths.get(xnatScanPath), filteredRoot, stats);
+                logger.info(
+                    "OHIF metadata scan filtered {} candidate files from {}; skipped {} by resource label, {} by extension, {} by size, {} unreadable",
+                    stats.included, xnatScanPath, stats.skippedResource, stats.skippedExtension, stats.skippedSize, stats.skippedUnreadable
+                );
+                scan.scan(filteredRoot.toString(), true);
+            } finally {
+                deleteTree(filteredRoot);
+            }
+            return receiver.getOhifViewerInput();
+        }
+
+        private static void createFilteredScanTree(final Path scanRoot, final Path filteredRoot, final FilterStats stats) throws IOException {
+            if (!Files.isDirectory(scanRoot, new LinkOption[0])) {
+                logger.warn("OHIF metadata scan skipped: scan root is not a directory: {}", scanRoot);
+                return;
+            }
+            final long maxScanBytes = maxScanBytes();
+            Files.walkFileTree(scanRoot, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (!attrs.isRegularFile()) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    Path relative = scanRoot.relativize(file);
+                    if (!isAllowedResourcePath(relative)) {
+                        stats.skippedResource++;
+                        return FileVisitResult.CONTINUE;
+                    }
+                    if (isExcludedExtension(file.getFileName().toString())) {
+                        stats.skippedExtension++;
+                        return FileVisitResult.CONTINUE;
+                    }
+                    if (maxScanBytes >= 0 && attrs.size() > maxScanBytes) {
+                        stats.skippedSize++;
+                        logger.warn("Skipping OHIF metadata scan for {}: size {} exceeds {} bytes", file, attrs.size(), maxScanBytes);
+                        return FileVisitResult.CONTINUE;
+                    }
+
+                    Path target = filteredRoot.resolve("dicom-" + stats.included + "-" + sanitize(file.getFileName().toString()));
+                    try {
+                        Files.createSymbolicLink(target, file.toAbsolutePath());
+                        stats.included++;
+                    } catch (IOException | UnsupportedOperationException e) {
+                        stats.skippedUnreadable++;
+                        logger.warn("Skipping OHIF metadata scan for {}: unable to link candidate file", file, e);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                    stats.skippedUnreadable++;
+                    logger.warn("Skipping OHIF metadata scan for unreadable path {}", file, exc);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        }
+
+        private static boolean isAllowedResourcePath(Path relative) {
+            for (int i = 0; i < relative.getNameCount(); i++) {
+                String part = relative.getName(i).toString();
+                if ("DICOM".equalsIgnoreCase(part) || "secondary".equalsIgnoreCase(part)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static boolean isExcludedExtension(String filename) {
+            String lower = filename.toLowerCase(Locale.ROOT);
+            for (String extension : excludedExtensions()) {
+                if (lower.equals(extension) || lower.endsWith("." + extension)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static Set<String> excludedExtensions() {
+            String configured = System.getProperty("ohif.metadata.excludedExtensions");
+            if (configured == null || configured.trim().isEmpty()) {
+                configured = System.getenv("OHIF_METADATA_EXCLUDED_EXTENSIONS");
+            }
+            if (configured == null || configured.trim().isEmpty()) {
+                return DEFAULT_EXCLUDED_EXTENSIONS;
+            }
+
+            Set<String> extensions = new HashSet<String>();
+            for (String raw : configured.split(",")) {
+                String extension = raw.trim().toLowerCase(Locale.ROOT);
+                while (extension.startsWith(".")) {
+                    extension = extension.substring(1);
+                }
+                if (!extension.isEmpty()) {
+                    extensions.add(extension);
+                }
+            }
+            return extensions;
+        }
+
+        private static long maxScanBytes() {
+            String configured = System.getProperty("ohif.metadata.maxScanBytes");
+            if (configured == null || configured.trim().isEmpty()) {
+                configured = System.getenv("OHIF_METADATA_MAX_SCAN_BYTES");
+            }
+            if (configured == null || configured.trim().isEmpty()) {
+                return DEFAULT_MAX_SCAN_BYTES;
+            }
+            try {
+                return Long.parseLong(configured.trim());
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid OHIF metadata max scan size '{}'; using default {}", configured, DEFAULT_MAX_SCAN_BYTES);
+                return DEFAULT_MAX_SCAN_BYTES;
+            }
+        }
+
+        private static String sanitize(String filename) {
+            return filename.replaceAll("[^A-Za-z0-9._-]", "_");
+        }
+
+        private static void deleteTree(Path root) throws IOException {
+            if (root == null || !Files.exists(root, new LinkOption[0])) {
+                return;
+            }
+            Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    Files.deleteIfExists(file);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                    Files.deleteIfExists(dir);
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        }
+
+        private static final class FilterStats {
+            private int included;
+            private int skippedResource;
+            private int skippedExtension;
+            private int skippedSize;
+            private int skippedUnreadable;
+        }
+    }
+    JAVA
+
+      compile_cp="${ohif_jar}:/usr/local/tomcat/webapps/ROOT/WEB-INF/lib/*:/TOMCAT/webapps/ROOT/WEB-INF/lib/*"
+      if javac -cp "${compile_cp}" -d /tmp/ohif-hotfix/classes /tmp/ohif-hotfix/src/org/nrg/xnatx/ohifviewer/inputcreator/CreateOhifViewerMetadata.java ; then
+        jar uf "${ohif_jar}" -C /tmp/ohif-hotfix/classes org/nrg/xnatx/ohifviewer/inputcreator
+        echo "OHIF metadata scan hotfix applied to ${ohif_jar}"
+      else
+        echo "OHIF metadata scan hotfix failed to compile" >&2
+        return 1
+      fi
+      rm -rf /tmp/ohif-hotfix
+    }
+
+    patch_ohif_metadata_scan

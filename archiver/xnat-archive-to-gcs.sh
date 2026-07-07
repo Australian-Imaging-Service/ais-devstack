@@ -58,10 +58,23 @@ while IFS=$'\t' read -r project label session_id; do
         continue
     fi
 
+    FILES_JSON=$(curl -sf -b "JSESSIONID=${JSESSION}" \
+        "${XNAT_URL}/data/experiments/${session_id}/scans/ALL/files?format=json") || {
+        log "WARN: Failed to list files for ${project}/${label} (${session_id})"
+        FAILED=$((FAILED + 1))
+        continue
+    }
+
+    FILE_COUNT=$(echo "$FILES_JSON" | jq '.ResultSet.Result | length')
+    if [ "$FILE_COUNT" -eq 0 ]; then
+        log "SKIP: ${project}/${label} (${session_id}) has no files to back up"
+        continue
+    fi
+
     # Download session as a ZIP via the XNAT REST API
     ZIP_FILE="${WORK_DIR}/${session_id}.zip"
     EXTRACT_DIR="${WORK_DIR}/${session_id}"
-    log "Downloading ${project}/${label} (${session_id})..."
+    log "Downloading ${project}/${label} (${session_id}, ${FILE_COUNT} files)..."
 
     HTTP_CODE=$(curl -sf -b "JSESSIONID=${JSESSION}" \
         -o "$ZIP_FILE" -w "%{http_code}" \
