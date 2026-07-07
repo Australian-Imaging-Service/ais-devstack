@@ -18,6 +18,7 @@ XNAT deployment on k3s with node-local storage for the Australian Imaging Servic
 - XNAT archive storage uses static `local` PVs pinned to `xnat-host` under `/srv/xnat-local-storage`. The in-cluster NFS server is legacy only and should not be in XNAT/Jupyter's write path.
 - Project archive directories must be explicitly mounted in `manifests/kustomization.yaml` and mirrored in `jupyterhub/2-xnat-mount-mapping.yaml`. If an existing project has data in the pod-local `/data/xnat/archive/<project>` path, copy it to `/srv/xnat-local-storage/gpfs/archive/<project>` before adding the mount, otherwise the rollout will hide or lose that local-only data.
 - XNAT Container Service uses the host Docker daemon through `/var/run/docker.sock`, mounted by `manifests/kustomization.yaml`. Docker runs containers on the host, so host paths must match XNAT's visible paths. Keep the host-side `/data/xnat` symlink mirror in sync with XNAT archive/build mounts, especially when adding new project archive mounts.
+- OHIF viewer 3.7.2 is hotfixed in `manifests/configmap.yaml` during XNAT pod init so server-side metadata generation scans only `DICOM`/`secondary` resource paths, skips common raw/data extensions such as `.dat`, and skips files larger than 1 GiB by default (`OHIF_METADATA_MAX_SCAN_BYTES` can override). This prevents large raw data files in scan resources from being parsed as DICOM and OOMing Tomcat.
 
 ### Verify Installation
 
@@ -119,6 +120,10 @@ Idempotent. Creates the user, grants `Administrator` role, creates the seed proj
 ### DICOM metadata pull workflow failures
 
 If XNAT shows many failed `Pulled Data from DICOM` workflows after ais-edge uploads, check the `xnat-upload/xnat-ingest-upload` deployment. Catalog-only `DICOM` resources in the archive make XNAT's `pullDataFromHeaders=true` endpoint fail with `Unable to locate DICOM or ECAT files`; the ingest uploader should skip that header-pull step unless local DICOM objects are actually present. Active stale failures can be dismissed by marking `wrk_workflowdata.status` as `Failed (Dismissed)` for `pipeline_name='Pulled Data from DICOM'`.
+
+### GCS archiver failures
+
+The `xnat-gcs-archiver` CronJob intentionally skips sessions with zero files before attempting the XNAT ZIP download. Many historical session shells have no files and no `.backup_complete` marker; treating those as download failures causes the nightly job to fail even though there is nothing to back up.
 
 ### Credentials for ais-edge `config/management.env`
 
