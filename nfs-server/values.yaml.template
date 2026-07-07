@@ -1,7 +1,8 @@
-# NFS Server Helm Chart Values
-# Provides in-cluster NFS server for shared XNAT storage
+# Legacy NFS Server Helm Chart Values
+# XNAT/Jupyter use static local PVs now. Keep this chart scaled down by
+# default; start it only for emergency access to the old rollback copy.
 
-replicaCount: 1
+replicaCount: 0
 
 image:
   repository: itsthenetwork/nfs-server-alpine
@@ -16,3 +17,9 @@ persistence:
   # k3s default storage class is 'local-path'
   storageClass: local-path
   size: 600Gi
+
+# The default nfs-server-alpine startup leaves knfsd at 8 worker threads.
+# XNAT and Jupyter are NFS clients on the same node as this in-cluster NFS
+# server, so all workers can be exhausted by client writeback/reclaim stalls
+# during large uploads. Keep a larger pool available.
+nfsdThreads: 32

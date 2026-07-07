@@ -1,65 +1,76 @@
 # XNAT Persistent Volumes
-# These PVs connect to the in-cluster NFS server for shared storage
+# Static local PVs for the single-node deployment. These remove the in-cluster
+# NFS server from XNAT's write path and pin the data to xnat-host.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-xnat
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
 ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: xnat-nfs
-  annotations:
-    pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
 spec:
   capacity:
-    storage: 1Gi
+    storage: 600Gi
   accessModes:
     - ReadWriteMany
-  mountOptions:
-    - nfsvers=4.2
-  storageClassName: nfs-csi
-  csi:
-    driver: nfs.csi.k8s.io
-    volumeHandle: nfs-server.storage.svc.cluster.local/xnat##
-    volumeAttributes:
-      server: nfs-server.storage.svc.cluster.local
-      share: /xnat
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-xnat
+  local:
+    path: /srv/xnat-local-storage/xnat
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - xnat-host
 ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: xnat-build
-  annotations:
-    pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
 spec:
   capacity:
     storage: 1Gi
   accessModes:
     - ReadWriteMany
-  mountOptions:
-    - nfsvers=4.2
-  storageClassName: nfs-csi
-  csi:
-    driver: nfs.csi.k8s.io
-    volumeHandle: nfs-server.storage.svc.cluster.local/xnat/data/build##
-    volumeAttributes:
-      server: nfs-server.storage.svc.cluster.local
-      share: /xnat/data/build
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-xnat
+  local:
+    path: /srv/xnat-local-storage/xnat/data/build
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - xnat-host
 ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
   name: xnat-gpfs
-  annotations:
-    pv.kubernetes.io/provisioned-by: nfs.csi.k8s.io
 spec:
   capacity:
-    storage: 1Gi
+    storage: 600Gi
   accessModes:
     - ReadWriteMany
-  mountOptions:
-    - nfsvers=4.2
-  storageClassName: nfs-csi
-  csi:
-    driver: nfs.csi.k8s.io
-    volumeHandle: nfs-server.storage.svc.cluster.local/gpfs##
-    volumeAttributes:
-      server: nfs-server.storage.svc.cluster.local
-      share: /gpfs
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-xnat
+  local:
+    path: /srv/xnat-local-storage/gpfs
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - xnat-host

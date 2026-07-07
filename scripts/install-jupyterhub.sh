@@ -72,11 +72,11 @@ if ! kubectl get pods -n ais-xnat -l app.kubernetes.io/name=xnat-web 2>/dev/null
 fi
 echo -e "${GREEN}XNAT is running${NC}"
 
-# Check NFS server is running
-if ! kubectl get pods -n storage -l app=nfs-server 2>/dev/null | grep -q Running; then
-    echo -e "${YELLOW}Warning: NFS server may not be running${NC}"
+# Check shared XNAT storage PVC exists
+if ! kubectl get pvc -n jupyter xnat-gpfs 2>/dev/null | grep -q Bound; then
+    echo -e "${YELLOW}Warning: Jupyter xnat-gpfs PVC is not bound yet${NC}"
 else
-    echo -e "${GREEN}NFS server is running${NC}"
+    echo -e "${GREEN}Jupyter xnat-gpfs PVC is bound${NC}"
 fi
 
 echo ""

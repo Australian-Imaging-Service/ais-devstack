@@ -40,13 +40,13 @@ xnat-web:
 
   resources:
     requests:
-      cpu: 1000m
-      memory: 2000Mi
+      cpu: "2"
+      memory: 4096Mi
     limits:
-      cpu: 1000m
-      memory: 2000Mi
+      cpu: "2"
+      memory: 4096Mi
 
-  nonheapmem: 1000Mi
+  nonheapmem: 3096Mi
 
   persistence:
     cache:

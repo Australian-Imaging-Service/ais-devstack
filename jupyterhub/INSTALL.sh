@@ -139,12 +139,12 @@ if ! $KUBECTL get pods -n ais-xnat xnat-web-0 &>/dev/null; then
 fi
 echo -e "${GREEN}XNAT found${NC}"
 
-# Check NFS server
-if ! $KUBECTL get pods -n storage -l app=nfs-server 2>/dev/null | grep -q Running; then
-    echo -e "${YELLOW}Warning: NFS server may not be running${NC}"
-    echo "Continuing anyway - ensure NFS is available"
+# Check shared XNAT storage PVC
+if ! $KUBECTL get pvc -n jupyter xnat-gpfs 2>/dev/null | grep -q Bound; then
+    echo -e "${YELLOW}Warning: Jupyter xnat-gpfs PVC is not bound yet${NC}"
+    echo "Continuing anyway - ensure shared XNAT storage is available"
 else
-    echo -e "${GREEN}NFS server found${NC}"
+    echo -e "${GREEN}Jupyter xnat-gpfs PVC is bound${NC}"
 fi
 
 echo ""

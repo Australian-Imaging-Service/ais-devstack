@@ -1,6 +1,6 @@
 # AIS-XNAT Deployment for k3s
 
-XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Service.
+XNAT deployment on k3s with node-local storage for the Australian Imaging Service.
 
 ### Important guidelines:
 
@@ -13,8 +13,11 @@ XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Servic
 
 - `kubectl` requires `sudo` on this machine (k3s kubeconfig at `/etc/rancher/k3s/k3s.yaml` is root-only)
 - XNAT runs as a StatefulSet (`xnat-web-0`), rollouts take a few minutes for the pod to terminate and restart
-- Always use `--post-renderer ./manifests/kustomize.sh` with helm commands — it applies NFS volume mount patches
+- Always use `--post-renderer ./manifests/kustomize.sh` with helm commands — it applies XNAT storage volume mount patches
 - After helm upgrade, verify with: `sudo kubectl -n ais-xnat rollout status statefulset/xnat-web`
+- XNAT archive storage uses static `local` PVs pinned to `xnat-host` under `/srv/xnat-local-storage`. The in-cluster NFS server is legacy only and should not be in XNAT/Jupyter's write path.
+- Project archive directories must be explicitly mounted in `manifests/kustomization.yaml` and mirrored in `jupyterhub/2-xnat-mount-mapping.yaml`. If an existing project has data in the pod-local `/data/xnat/archive/<project>` path, copy it to `/srv/xnat-local-storage/gpfs/archive/<project>` before adding the mount, otherwise the rollout will hide or lose that local-only data.
+- XNAT Container Service uses the host Docker daemon through `/var/run/docker.sock`, mounted by `manifests/kustomization.yaml`. Docker runs containers on the host, so host paths must match XNAT's visible paths. Keep the host-side `/data/xnat` symlink mirror in sync with XNAT archive/build mounts, especially when adding new project archive mounts.
 
 ### Verify Installation
 
@@ -113,6 +116,10 @@ Idempotent. Creates the user, grants `Administrator` role, creates the seed proj
 
 `siteConfig.enabledProviders` is `["stanford"]` — the web login form refuses localdb. But REST `POST /data/JSESSION` and HTTP Basic on `/xapi/*` / `/data/*` still accept localdb credentials. So service accounts work without weakening the OIDC enforcement on humans.
 
+### DICOM metadata pull workflow failures
+
+If XNAT shows many failed `Pulled Data from DICOM` workflows after ais-edge uploads, check the `xnat-upload/xnat-ingest-upload` deployment. Catalog-only `DICOM` resources in the archive make XNAT's `pullDataFromHeaders=true` endpoint fail with `Unable to locate DICOM or ECAT files`; the ingest uploader should skip that header-pull step unless local DICOM objects are actually present. Active stale failures can be dismissed by marking `wrk_workflowdata.status` as `Failed (Dismissed)` for `pipeline_name='Pulled Data from DICOM'`.
+
 ### Credentials for ais-edge `config/management.env`
 
 ```bash
@@ -179,17 +186,33 @@ kubectl -n ais-xnat describe pod xnat-web-0
 kubectl -n ais-xnat logs xnat-web-0 -c home-init
 ```
 
-### NFS connection issues
+### Local storage issues
 
 ```bash
-# Check NFS server is running
-kubectl -n storage get pods
-kubectl -n storage logs deploy/nfs-server
-
-# Check PV/PVC binding
+# Check static local PV/PVC binding
 kubectl get pv
 kubectl -n ais-xnat get pvc
+kubectl -n jupyter get pvc xnat-gpfs
+
+# Check the node-local backing directory
+sudo du -sh /srv/xnat-local-storage
+findmnt /srv/xnat-local-storage
 ```
+
+The old in-cluster NFS server exported `storage/pv-nfs-server`, a `local-path`
+PVC on the node root disk. XNAT and Jupyter mounted that export back through NFS
+from the same node, which could deadlock all `nfsd` workers during large uploads.
+Do not reintroduce NFS for XNAT archive writes. If emergency recovery requires
+temporarily starting the legacy server, keep write-heavy uploaders paused:
+
+```bash
+sudo kubectl -n storage exec deploy/nfs-server -- rpc.nfsd 32
+sudo kubectl -n storage exec deploy/nfs-server -- cat /proc/fs/nfsd/threads
+```
+
+The current local PV paths still live on the boot persistent disk unless a
+separate disk is mounted at `/srv/xnat-local-storage`. For sustained heavy
+writes, prefer attaching and mounting a dedicated disk at that path.
 
 ### OIDC login issues
 
@@ -210,7 +233,7 @@ kubectl -n ais-xnat logs xnat-web-0-postgresql-0
 
 ## Plugins
 
-Plugins in the `plugins/` directory are automatically copied to the NFS server during installation.
+Plugins in the `plugins/` directory are copied to `/srv/xnat-local-storage/xnat/plugins/` during installation.
 
 **Pre-installed plugins:**
 - `container-service-3.7.2-uq-fat.jar` - Container service plugin
@@ -221,9 +244,8 @@ Plugins in the `plugins/` directory are automatically copied to the NFS server d
 2. Copy manually after installation:
 
 ```bash
-# Copy plugin jar to NFS server
-kubectl -n storage cp my-plugin.jar \
-  $(kubectl -n storage get pods -l app=nfs-server -o name | cut -d/ -f2):/exports/xnat/plugins/
+# Copy plugin jar to local XNAT storage
+sudo cp my-plugin.jar /srv/xnat-local-storage/xnat/plugins/
 
 # Restart XNAT to load new plugins
 kubectl -n ais-xnat rollout restart statefulset xnat-web
