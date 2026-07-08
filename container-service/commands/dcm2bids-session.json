@@ -1,0 +1,70 @@
+{
+  "name": "dcm2bids-session",
+  "label": "DICOM to BIDS",
+  "description": "Runs XNAT's dcm2bids session converter. It converts DICOM scan resources to scan-level NIFTI resources and BIDS JSON sidecars using the site or project BIDS map.",
+  "version": "1.5.1-ais.1",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "xnat/dcm2bids-session:1.5.1",
+  "command-line": "python dcm2bids_wholeSession.py #SESSION_ID# #OVERWRITE# --host $XNAT_HOST --user $XNAT_USER --pass $XNAT_PASS --upload-by-ref False --dicomdir /dicom --niftidir /nifti",
+  "workdir": "/src",
+  "override-entrypoint": true,
+  "mounts": [
+    {
+      "name": "nifti",
+      "writable": true,
+      "path": "/nifti"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "session_id",
+      "description": "XNAT ID of the session",
+      "type": "string",
+      "required": true,
+      "replacement-key": "#SESSION_ID#",
+      "command-line-flag": "--session"
+    },
+    {
+      "name": "overwrite",
+      "description": "Overwrite any existing NIFTI and BIDS scan resources?",
+      "type": "boolean",
+      "required": false,
+      "default-value": false,
+      "true-value": "True",
+      "false-value": "False",
+      "replacement-key": "#OVERWRITE#",
+      "command-line-flag": "--overwrite"
+    }
+  ],
+  "outputs": [],
+  "xnat": [
+    {
+      "name": "dcm2bids-session-session",
+      "label": "DICOM to BIDS",
+      "description": "Convert this image session's DICOM scan resources to NIFTI and BIDS sidecar resources",
+      "contexts": [
+        "xnat:imageSessionData"
+      ],
+      "external-inputs": [
+        {
+          "name": "session",
+          "description": "Input image session",
+          "type": "Session",
+          "required": true
+        }
+      ],
+      "derived-inputs": [
+        {
+          "name": "session-id",
+          "description": "The session's id",
+          "type": "string",
+          "derived-from-wrapper-input": "session",
+          "derived-from-xnat-object-property": "id",
+          "provides-value-for-command-input": "session_id"
+        }
+      ],
+      "output-handlers": []
+    }
+  ]
+}

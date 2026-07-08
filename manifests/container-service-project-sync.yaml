@@ -1,0 +1,112 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: container-service-project-sync
+  namespace: ais-xnat
+data:
+  sync-container-service-projects.py: |
+    import base64
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    xnat_url = os.environ.get("XNAT_URL", "http://xnat-web.ais-xnat.svc.cluster.local").rstrip("/")
+    username = os.environ["XNAT_USER"]
+    password = os.environ["XNAT_PASS"]
+    wrappers = [
+        item.split(":", 1)
+        for item in os.environ.get(
+            "CONTAINER_SERVICE_WRAPPERS",
+            "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session",
+        ).split(",")
+        if item.strip()
+    ]
+
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+
+    def request(method, path):
+        req = urllib.request.Request(
+            f"{xnat_url}{path}",
+            method=method,
+            headers={"Authorization": f"Basic {auth}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            sys.stderr.write(f"{method} {path} failed with HTTP {exc.code}: {exc.read().decode()}\n")
+            raise
+        return json.loads(body.decode() or "null") if body else None
+
+    projects = [
+        row["ID"]
+        for row in request("GET", "/data/projects?format=json")["ResultSet"]["Result"]
+    ]
+    commands = request("GET", "/xapi/commands")
+    command_ids = {command["name"]: command["id"] for command in commands}
+
+    missing = [name for name, _ in wrappers if name not in command_ids]
+    if missing:
+        raise SystemExit(f"Missing Container Service commands: {', '.join(missing)}")
+
+    for command_name, wrapper_name in wrappers:
+        command_id = command_ids[command_name]
+        request("PUT", f"/xapi/commands/{command_id}/wrappers/{urllib.parse.quote(wrapper_name)}/enabled")
+        for project in projects:
+            path = (
+                f"/xapi/projects/{urllib.parse.quote(project)}/commands/{command_id}"
+                f"/wrappers/{urllib.parse.quote(wrapper_name)}/enabled"
+            )
+            request("PUT", path)
+            print(f"Enabled {command_name}/{wrapper_name} for project {project}")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: container-service-project-sync
+  namespace: ais-xnat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/container-service-project-sync/sync-container-service-projects.py
+              env:
+                - name: XNAT_URL
+                  value: "http://xnat-web.ais-xnat.svc.cluster.local"
+                - name: CONTAINER_SERVICE_WRAPPERS
+                  value: "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session"
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: password
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/container-service-project-sync
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: container-service-project-sync

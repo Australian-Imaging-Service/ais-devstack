@@ -156,7 +156,7 @@ data:
                         return FileVisitResult.CONTINUE;
                     }
 
-                    Path target = filteredRoot.resolve("dicom-" + stats.included + "-" + sanitize(file.getFileName().toString()));
+                    Path target = filteredRoot.resolve(uniqueFilename(filteredRoot, sanitize(file.getFileName().toString())));
                     try {
                         Files.createSymbolicLink(target, file.toAbsolutePath());
                         stats.included++;
@@ -236,6 +236,22 @@ data:
 
         private static String sanitize(String filename) {
             return filename.replaceAll("[^A-Za-z0-9._-]", "_");
+        }
+
+        private static String uniqueFilename(Path root, String filename) {
+            Path target = root.resolve(filename);
+            if (!Files.exists(target, new LinkOption[0])) {
+                return filename;
+            }
+            int dot = filename.lastIndexOf('.');
+            String stem = dot > 0 ? filename.substring(0, dot) : filename;
+            String extension = dot > 0 ? filename.substring(dot) : "";
+            int suffix = 1;
+            do {
+                target = root.resolve(stem + "-" + suffix + extension);
+                suffix++;
+            } while (Files.exists(target, new LinkOption[0]));
+            return target.getFileName().toString();
         }
 
         private static void deleteTree(Path root) throws IOException {

@@ -667,7 +667,7 @@ singleuser:
         })
 
   image:
-    name: ghcr.io/neurodesk/neurodesktop/neurodesktop
+    name: ghcr.io/neurodesk/neurodesktop
     tag: "2026-07-07"
     pullPolicy: IfNotPresent
 
