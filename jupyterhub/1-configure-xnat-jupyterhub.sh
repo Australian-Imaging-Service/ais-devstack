@@ -160,7 +160,7 @@ echo -e "${BLUE}[4/5] Configuring Neurodesk compute environment...${NC}"
 
 # The plugin auto-creates a default compute environment on first boot.
 # Check if compute environments exist, and update the default to use Neurodesk image.
-NEURODESK_IMAGE="ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-01-28"
+NEURODESK_IMAGE="ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-07-07"
 
 # Try to get existing compute environment configs
 EXISTING_ENVS=$(xnat_api GET "/xapi/compute-environment-configs" 2>/dev/null || echo "")

@@ -49,7 +49,7 @@ Navigate to: **Administer** → **Plugin Settings** → **JupyterHub** → **Com
 
 ```yaml
 Name: NeuroDesk
-Image: ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-01-28
+Image: ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-07-07
 ```
 
 Hardware configs (Small/Medium/Large/XLarge) are auto-created by the plugin.
@@ -131,7 +131,7 @@ When JupyterHub's pre_spawn_hook calls XNAT, it expects:
 {
   "task_template": {
     "container_spec": {
-      "image": "ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-01-28",
+      "image": "ghcr.io/neurodesk/neurodesktop/neurodesktop:2026-07-07",
       "mounts": [
         {
           "source": "/data/xnat/archive/PROJECT_ID/arc001",

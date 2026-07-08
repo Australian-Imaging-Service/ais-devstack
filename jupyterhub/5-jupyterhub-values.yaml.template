@@ -109,7 +109,8 @@ hub:
         - --timeout=86400
         - --cull-every=3600
         - --cull-users
-        - --url=http://localhost:8081/hub/api
+        - --remove-named-servers
+        - --url=http://localhost:8081/jupyter/hub/api
 
   extraEnv:
     JUPYTERHUB_CRYPT_KEY_HEX: "62c5252a18d4c48ea3b6ca199f501c439a58be3521d01f0055518a1d2a46c3fe"
@@ -348,9 +349,47 @@ hub:
           import requests
           from requests.auth import HTTPBasicAuth
           import os
+          from urllib.parse import quote
 
           # Use JupyterHub username (which equals XNAT username)
           xnat_username = spawner.user.name
+
+          server_root = '/home/jovyan'
+
+          def _home_xnat_mount_target(target):
+              """Mirror an XNAT data mount into the Jupyter file-browser root."""
+              if not target:
+                  return None
+              normalized = os.path.normpath('/' + target.lstrip('/'))
+              if normalized == server_root or normalized.startswith(server_root + '/'):
+                  return normalized
+
+              suffix = normalized.lstrip('/')
+              for prefix in ('/data/projects/', '/data/xnat/archive/', '/data/xnat/'):
+                  if normalized == prefix.rstrip('/'):
+                      suffix = ''
+                      break
+                  if normalized.startswith(prefix):
+                      suffix = normalized[len(prefix):]
+                      break
+
+              safe_parts = [
+                  part for part in suffix.split('/')
+                  if part and part not in ('.', '..')
+              ]
+              if not safe_parts:
+                  return f'{server_root}/xnat-data'
+              return f"{server_root}/xnat-data/{'/'.join(safe_parts)}"
+
+          def _lab_tree_url(path):
+              normalized = os.path.normpath(path or server_root)
+              try:
+                  relpath = os.path.relpath(normalized, server_root)
+              except ValueError:
+                  return '/lab'
+              if relpath == '.' or relpath == '..' or relpath.startswith('../'):
+                  return '/lab'
+              return f"/lab/tree/{quote(relpath, safe='/')}"
 
           existing_volumes = getattr(spawner, 'volumes', {})
           existing_mounts = getattr(spawner, 'volume_mounts', {})
@@ -435,8 +474,10 @@ hub:
               }
           ]
 
+          launch_dir = server_root
+          data_mount_targets = []
+
           spawner.volume_mounts.extend(workspace_mounts)
-          spawner.working_dir = f'/workspace/{xnat_username}'
 
           # Set XNAT_USERNAME environment variable for upload tool
           spawner.environment['XNAT_USERNAME'] = xnat_username
@@ -521,11 +562,40 @@ hub:
                           'readOnly': read_only
                       }
                       spawner.volume_mounts.append(xnat_mount)
+                      if target:
+                          home_target = _home_xnat_mount_target(target)
+                          if home_target:
+                              spawner.volume_mounts.append({
+                                  'name': 'xnat-gpfs',
+                                  'mountPath': home_target,
+                                  'subPath': subpath,
+                                  'readOnly': read_only
+                              })
+                              data_mount_targets.append(home_target.rstrip('/') or server_root)
               else:
                   spawner.log.warning(f"XNAT API returned status {response.status_code}")
 
           except Exception as e:
               spawner.log.warning(f"XNAT API error: {e}")
+
+          if data_mount_targets:
+              try:
+                  launch_dir = os.path.commonpath(data_mount_targets)
+              except ValueError:
+                  launch_dir = data_mount_targets[0]
+              if not launch_dir or launch_dir == '/':
+                  launch_dir = data_mount_targets[0]
+              spawner.log.info(f"[XNAT] Starting JupyterLab in browser-visible XNAT data directory: {launch_dir}")
+          else:
+              spawner.log.info(f"[XNAT] Starting JupyterLab in home directory: {launch_dir}")
+          existing_args = list(getattr(spawner, 'args', []) or [])
+          spawner.args = [
+              arg for arg in existing_args
+              if not str(arg).startswith('--ServerApp.root_dir=')
+              and not str(arg).startswith('--NotebookApp.notebook_dir=')
+          ] + [f'--ServerApp.root_dir={server_root}']
+          spawner.default_url = _lab_tree_url(launch_dir)
+          spawner.working_dir = launch_dir
 
       c.KubeSpawner.pre_spawn_hook = pre_spawn_hook
 
@@ -534,6 +604,12 @@ hub:
     pvc:
       storageClassName: longhorn
       storage: 5Gi
+
+cull:
+  # XNAT launches timestamped named servers. If the chart culler stops one
+  # without removing it, the stale record still counts against the per-user
+  # named server limit.
+  removeNamedServers: true
 
 proxy:
   service:
@@ -592,7 +668,7 @@ singleuser:
 
   image:
     name: ghcr.io/neurodesk/neurodesktop/neurodesktop
-    tag: "2026-01-28"
+    tag: "2026-07-07"
     pullPolicy: IfNotPresent
 
   # Resource limits and guarantees

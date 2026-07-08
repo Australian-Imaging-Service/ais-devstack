@@ -1,0 +1,10 @@
+{
+  "name": "xnat2bids",
+  "label": "XNAT to BIDS setup",
+  "description": "Setup command that transforms an XNAT session containing scan-level NIFTI resources and BIDS JSON sidecars into a BIDS dataset for BIDS Apps.",
+  "version": "1.4",
+  "schema-version": "1.0",
+  "type": "docker-setup",
+  "image": "xnat/xnat2bids-setup:1.4",
+  "command-line": "xnat2bids.py /input /output"
+}

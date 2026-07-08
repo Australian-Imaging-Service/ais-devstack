@@ -10,11 +10,11 @@ Three separate issues were identified, each blocking notebook launch:
 
 ### 1. Stale stopped named servers blocking new launches
 
-**Symptom:** `400 POST` — "User stanford_sciget already has the maximum of 1 named servers."
+**Symptom:** `400 POST` — "User stanford_sciget already has the maximum of 2 named servers."
 
-XNAT creates timestamped named servers (e.g. `20260404T021032691Z`) each time a user launches a notebook. JupyterHub is configured with `named_server_limit_per_user: 1`. When the idle culler stopped these servers, it left them registered in the JupyterHub database because `removeNamedServers` was `false`. The stopped-but-not-removed servers counted against the limit, permanently blocking new launches.
+XNAT creates timestamped named servers (e.g. `20260404T021032691Z`) each time a user launches a notebook. JupyterHub is configured with `named_server_limit_per_user: 2`. When an idle culler stops these servers, it must also remove them from the JupyterHub database. Otherwise stopped-but-not-removed servers still count against the limit and block new launches.
 
-**Fix:** Added `--remove-named-servers` to the `user-cull` service command in `5-jupyterhub-values.yaml:80`. Manually cleaned up existing stale servers via the JupyterHub API using `DELETE /api/users/{name}/servers/{server_name}` with `{"remove": true}` in the request body (the `remove` flag must be in the JSON body, not a query parameter — without it, the DELETE only stops the server but doesn't remove the database record).
+**Fix:** Added `cull.removeNamedServers: true` for the chart-managed culler and `--remove-named-servers` to the `user-cull` service command. Manually clean up existing stale servers via the JupyterHub API using `DELETE /api/users/{name}/servers/{server_name}` with `{"remove": true}` in the request body (the `remove` flag must be in the JSON body, not a query parameter; without it, the DELETE only stops the server but does not remove the database record).
 
 ### 2. Username mapping missing for token API handlers
 
@@ -61,7 +61,8 @@ This bypasses the OIDC flow entirely when the user arrives from XNAT with a vali
 ## Files Changed
 
 - `jupyterhub/5-jupyterhub-values.yaml`:
-  - Line 80: Added `--remove-named-servers` to user-cull service
+  - Added `cull.removeNamedServers: true` for the chart-managed idle culler
+  - Added `--remove-named-servers` to user-cull service
   - Line 126: Added `UserTokenListAPIHandler, UserTokenAPIHandler` imports
   - Lines 278-318: Token handler wrappers with scope rewriting
   - Lines 320-341: Async `get_current_user` patch for URL token auth
@@ -70,4 +71,4 @@ This bypasses the OIDC flow entirely when the user arrives from XNAT with a vali
 
 - **Stanford OIDC PKCE incompatibility:** Direct login to JupyterHub via Stanford OIDC (not via XNAT) will still fail with the "InvalidEvent" error. This only affects users navigating directly to `/jupyter/` — XNAT-initiated notebook launches use the token auth bypass.
 
-- **user-cull URL path:** The `user-cull` service uses `--url=http://localhost:8081/hub/api` but the hub's base URL is `/jupyter/`, so it should be `http://localhost:8081/jupyter/hub/api`. This causes a 404 on the first cull attempt (it self-corrects on subsequent attempts via the managed `jupyterhub-idle-culler` service which uses the correct URL).
+- No known remaining issue with XNAT-initiated JupyterHub launches after the fixes above.
