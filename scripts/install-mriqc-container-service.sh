@@ -9,9 +9,11 @@ XNAT_SERVICE="${XNAT_SERVICE:-xnat-web}"
 XNAT_ADMIN_SECRET="${XNAT_ADMIN_SECRET:-xnat-archiver-creds}"
 XNAT_ADMIN_USER="${XNAT_ADMIN_USER:-admin}"
 KUBECTL_CMD="${KUBECTL_CMD:-sudo kubectl}"
+CONTAINER_SERVICE_ENABLE_PROJECTS="${CONTAINER_SERVICE_ENABLE_PROJECTS:-${MRIQC_ENABLE_PROJECTS:-all}}"
 
 SETUP_COMMAND_JSON="${REPO_ROOT}/container-service/commands/xnat2bids-setup.json"
 MRIQC_COMMAND_JSON="${REPO_ROOT}/container-service/commands/mriqc-session.json"
+DCM2BIDS_COMMAND_JSON="${REPO_ROOT}/container-service/commands/dcm2bids-session.json"
 
 require_file() {
   local path="$1"
@@ -118,6 +120,13 @@ enable_wrapper_sitewide() {
   curl_xnat PUT "/xapi/commands/${command_id}/wrappers/${wrapper_name}/enabled" >/dev/null
 }
 
+enable_wrapper_for_project() {
+  local project="$1"
+  local command_id="$2"
+  local wrapper_name="$3"
+  curl_xnat PUT "/xapi/projects/${project}/commands/${command_id}/wrappers/${wrapper_name}/enabled" >/dev/null
+}
+
 verify_wrapper_enabled() {
   local command_id="$1"
   local wrapper_name="$2"
@@ -129,14 +138,36 @@ verify_wrapper_enabled() {
   fi
 }
 
+project_ids_to_enable() {
+  if [[ "${CONTAINER_SERVICE_ENABLE_PROJECTS}" == "all" ]]; then
+    curl_xnat GET '/data/projects?format=json' | jq -r '.ResultSet.Result[].ID'
+  elif [[ -n "${CONTAINER_SERVICE_ENABLE_PROJECTS}" && "${CONTAINER_SERVICE_ENABLE_PROJECTS}" != "none" ]]; then
+    printf '%s\n' "${CONTAINER_SERVICE_ENABLE_PROJECTS}" | tr ',' '\n' | awk 'NF {print $1}'
+  fi
+}
+
+enable_wrapper_for_projects() {
+  local command_id="$1"
+  local wrapper_name="$2"
+  local project
+
+  while IFS= read -r project; do
+    [[ -n "${project}" ]] || continue
+    enable_wrapper_for_project "${project}" "${command_id}" "${wrapper_name}"
+    echo "Enabled ${wrapper_name} for project ${project}"
+  done < <(project_ids_to_enable)
+}
+
 require_file "${SETUP_COMMAND_JSON}"
 require_file "${MRIQC_COMMAND_JSON}"
+require_file "${DCM2BIDS_COMMAND_JSON}"
 require_bin curl
 require_bin jq
 require_bin base64
 
 jq empty "${SETUP_COMMAND_JSON}"
 jq empty "${MRIQC_COMMAND_JSON}"
+jq empty "${DCM2BIDS_COMMAND_JSON}"
 
 XNAT_ADMIN_PASSWORD="$(kubectl_cmd -n "${XNAT_NAMESPACE}" get secret "${XNAT_ADMIN_SECRET}" -o jsonpath='{.data.password}' | base64 -d)"
 if [[ -z "${XNAT_ADMIN_PASSWORD}" ]]; then
@@ -149,11 +180,21 @@ XNAT_BASE_URL="$(api_url)"
 echo "Installing Container Service commands into ${XNAT_BASE_URL}"
 setup_id="$(upsert_command "${SETUP_COMMAND_JSON}")"
 mriqc_id="$(upsert_command "${MRIQC_COMMAND_JSON}")"
+dcm2bids_id="$(upsert_command "${DCM2BIDS_COMMAND_JSON}")"
 
 set_public_visibility "${setup_id}"
 set_public_visibility "${mriqc_id}"
+set_public_visibility "${dcm2bids_id}"
+
 enable_wrapper_sitewide "${mriqc_id}" "mriqc-session"
+enable_wrapper_sitewide "${dcm2bids_id}" "dcm2bids-session-session"
+
+enable_wrapper_for_projects "${mriqc_id}" "mriqc-session"
+enable_wrapper_for_projects "${dcm2bids_id}" "dcm2bids-session-session"
+
 verify_wrapper_enabled "${mriqc_id}" "mriqc-session"
+verify_wrapper_enabled "${dcm2bids_id}" "dcm2bids-session-session"
 
 echo "Installed xnat2bids setup command id ${setup_id}"
 echo "Installed MRIQC command id ${mriqc_id}; wrapper mriqc-session is enabled site-wide"
+echo "Installed DICOM-to-BIDS command id ${dcm2bids_id}; wrapper dcm2bids-session-session is enabled site-wide"

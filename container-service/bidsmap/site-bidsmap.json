@@ -1,0 +1,102 @@
+[
+  {
+    "series_description": "MPRAGE",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "T1 MPRAGE",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "t1_mprage_sag_1mm_cs_dr",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "t1_mprage_sag_1mm_p3",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "t1_mprage_tra_p2_iso",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "t1_mp2rage_sag_0.75iso_UNI-DEN",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "t1_mp2rage_sag_075iso_UNI_DEN",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "AX T1",
+    "bidsname": "T1w"
+  },
+  {
+    "series_description": "T2w",
+    "bidsname": "T2w"
+  },
+  {
+    "series_description": "AX T2",
+    "bidsname": "T2w"
+  },
+  {
+    "series_description": "t2_tse_tra",
+    "bidsname": "T2w"
+  },
+  {
+    "series_description": "t2_tse_fs_tra_p3",
+    "bidsname": "T2w"
+  },
+  {
+    "series_description": "FLAIR",
+    "bidsname": "FLAIR"
+  },
+  {
+    "series_description": "DWI",
+    "bidsname": "dwi"
+  },
+  {
+    "series_description": "DTI",
+    "bidsname": "dwi"
+  },
+  {
+    "series_description": "DWI_RESOLVE_cor_11x11x2_R3RL_SMS2",
+    "bidsname": "dwi"
+  },
+  {
+    "series_description": "rest",
+    "bidsname": "task-rest_bold"
+  },
+  {
+    "series_description": "rsfMRI_3x3x3.5_no_gap",
+    "bidsname": "task-rest_bold"
+  },
+  {
+    "series_description": "BOLD",
+    "bidsname": "task-rest_bold"
+  },
+  {
+    "series_description": "leftthumb",
+    "bidsname": "task-leftthumb_bold"
+  },
+  {
+    "series_description": "rightthumb",
+    "bidsname": "task-rightthumb_bold"
+  },
+  {
+    "series_description": "leftmiddle",
+    "bidsname": "task-leftmiddle_bold"
+  },
+  {
+    "series_description": "rightmiddle",
+    "bidsname": "task-rightmiddle_bold"
+  },
+  {
+    "series_description": "leftpinky",
+    "bidsname": "task-leftpinky_bold"
+  },
+  {
+    "series_description": "rightpinky",
+    "bidsname": "task-rightpinky_bold"
+  }
+]
