@@ -17,7 +17,10 @@ XNAT deployment on k3s with node-local storage for the Australian Imaging Servic
 - After helm upgrade, verify with: `sudo kubectl -n ais-xnat rollout status statefulset/xnat-web`
 - XNAT archive storage uses static `local` PVs pinned to `xnat-host` under `/srv/xnat-local-storage`. The in-cluster NFS server is legacy only and should not be in XNAT/Jupyter's write path.
 - Project archive directories must be explicitly mounted in `manifests/kustomization.yaml` and mirrored in `jupyterhub/2-xnat-mount-mapping.yaml`. If an existing project has data in the pod-local `/data/xnat/archive/<project>` path, copy it to `/srv/xnat-local-storage/gpfs/archive/<project>` before adding the mount, otherwise the rollout will hide or lose that local-only data.
+- JupyterHub XNAT launches keep the Jupyter file-browser root at `/home/jovyan`. XNAT data mounts remain available at their original `/data/...` targets and are also mirrored under `/home/jovyan/xnat-data/...`; JupyterLab opens in the mirrored XNAT data target, or `/home/jovyan` when no XNAT data is mounted.
+- JupyterHub allows two XNAT named servers per user. Keep `cull.removeNamedServers: true` enabled so stopped timestamped servers are removed instead of blocking new launches.
 - XNAT Container Service uses the host Docker daemon through `/var/run/docker.sock`, mounted by `manifests/kustomization.yaml`. Docker runs containers on the host, so host paths must match XNAT's visible paths. Keep the host-side `/data/xnat` symlink mirror in sync with XNAT archive/build mounts, especially when adding new project archive mounts.
+- MRIQC is installed as XNAT Container Service command definitions in `container-service/commands/` via `scripts/install-mriqc-container-service.sh`. It runs `nipreps/mriqc:24.0.2` through `xnat2bids`; sessions must already have scan-level `NIFTI` resources and `BIDS` JSON sidecars. DICOM-only sessions need a DICOM-to-BIDS/NIFTI preparation step before MRIQC will work.
 - OHIF viewer 3.7.2 is hotfixed in `manifests/configmap.yaml` during XNAT pod init so server-side metadata generation scans only `DICOM`/`secondary` resource paths, skips common raw/data extensions such as `.dat`, and skips files larger than 1 GiB by default (`OHIF_METADATA_MAX_SCAN_BYTES` can override). This prevents large raw data files in scan resources from being parsed as DICOM and OOMing Tomcat.
 
 ### Verify Installation
@@ -120,6 +123,10 @@ Idempotent. Creates the user, grants `Administrator` role, creates the seed proj
 ### DICOM metadata pull workflow failures
 
 If XNAT shows many failed `Pulled Data from DICOM` workflows after ais-edge uploads, check the `xnat-upload/xnat-ingest-upload` deployment. Catalog-only `DICOM` resources in the archive make XNAT's `pullDataFromHeaders=true` endpoint fail with `Unable to locate DICOM or ECAT files`; the ingest uploader should skip that header-pull step unless local DICOM objects are actually present. Active stale failures can be dismissed by marking `wrk_workflowdata.status` as `Failed (Dismissed)` for `pipeline_name='Pulled Data from DICOM'`.
+
+The `xnat-ingest-upload` deployment also hot-patches `xnat-ingest` idempotency so existing empty XNAT resources do not count as uploaded. If an upload creates a partial experiment with empty `DICOM` resources while the staged S3 prefix is still present, delete the partial XNAT experiment/resource and let the staged data re-upload; do not move the staged prefix to `uploaded/` until XNAT file counts match the staged file count.
+
+For OHIF sessions that show studies/series but no instances, check `xnat_imagescandata.uid`: OHIF maps DICOM `SeriesInstanceUID` to XNAT scan IDs through that field. After restoring catalog-only sessions, regenerate OHIF metadata and verify instance counts; if instances remain zero, populate scan UIDs from the DICOM `SeriesInstanceUID` values and regenerate metadata. Catalog audits should check both zero `xnat_abstractresource.file_count` and nonzero file counts whose catalog XML is missing or has no `cat:entry` elements.
 
 ### GCS archiver failures
 

@@ -1,0 +1,107 @@
+{
+  "name": "mriqc-bids",
+  "label": "MRIQC",
+  "description": "Runs MRIQC participant-level quality control on an XNAT MR session after converting XNAT NIFTI/BIDS resources to BIDS layout.",
+  "version": "24.0.2-ais.1",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "nipreps/mriqc:24.0.2",
+  "index": "https://index.docker.io/v1/",
+  "info-url": "https://mriqc.readthedocs.io/",
+  "command-line": "mriqc /input /output participant --species human --no-sub --notrack --no-datalad-get --nprocs #NPROCS# --omp-nthreads #OMP_NTHREADS# --mem #MEMORY_GB# -w /work",
+  "working-directory": "/work",
+  "override-entrypoint": true,
+  "reserve-memory": "8192",
+  "limit-memory": "16384",
+  "limit-cpu": "4.0",
+  "environment-variables": {
+    "HOME": "/work/home",
+    "MPLCONFIGDIR": "/work/matplotlib",
+    "TEMPLATEFLOW_HOME": "/work/templateflow"
+  },
+  "mounts": [
+    {
+      "name": "bids-in",
+      "writable": false,
+      "path": "/input"
+    },
+    {
+      "name": "mriqc-out",
+      "writable": true,
+      "path": "/output"
+    },
+    {
+      "name": "work",
+      "writable": true,
+      "path": "/work"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "nprocs",
+      "label": "CPU processes",
+      "description": "Maximum number of MRIQC worker processes.",
+      "type": "number",
+      "required": true,
+      "default-value": "4",
+      "replacement-key": "#NPROCS#"
+    },
+    {
+      "name": "omp-nthreads",
+      "label": "Threads per process",
+      "description": "Maximum number of OpenMP threads used by ANTs and similar tools.",
+      "type": "number",
+      "required": true,
+      "default-value": "2",
+      "replacement-key": "#OMP_NTHREADS#"
+    },
+    {
+      "name": "memory-gb",
+      "label": "Memory GB",
+      "description": "Memory limit MRIQC should assume for workflow scheduling.",
+      "type": "number",
+      "required": true,
+      "default-value": "12",
+      "replacement-key": "#MEMORY_GB#"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "mriqc-output",
+      "description": "MRIQC reports, figures, logs, and IQM files.",
+      "mount": "mriqc-out",
+      "required": true
+    }
+  ],
+  "xnat": [
+    {
+      "name": "mriqc-session",
+      "label": "MRIQC",
+      "description": "Run MRIQC on this MR session",
+      "contexts": [
+        "xnat:mrSessionData"
+      ],
+      "external-inputs": [
+        {
+          "name": "session",
+          "description": "Input MR session. The session must contain scan-level NIFTI resources and BIDS JSON sidecar resources.",
+          "type": "Session",
+          "required": true,
+          "provides-files-for-command-mount": "bids-in",
+          "via-setup-command": "xnat/xnat2bids-setup:1.4:xnat2bids",
+          "load-children": false
+        }
+      ],
+      "derived-inputs": [],
+      "output-handlers": [
+        {
+          "name": "mriqc-resource",
+          "accepts-command-output": "mriqc-output",
+          "as-a-child-of": "session",
+          "type": "Resource",
+          "label": "MRIQC"
+        }
+      ]
+    }
+  ]
+}
