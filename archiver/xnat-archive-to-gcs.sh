@@ -1,6 +1,7 @@
 #!/bin/bash
 # XNAT Archive to GCS — Nightly backup + automatic offload
-# Downloads session data via the XNAT REST API and uploads to GCS.
+# Syncs local XNAT archive session files to GCS. REST ZIP download mode is
+# retained as an explicit fallback.
 # Runs as a Kubernetes CronJob.
 set -euo pipefail
 
@@ -15,6 +16,7 @@ DB_USER="${DB_USER:-xnat}"
 DB_PASS="${DB_PASS:-}"
 WORK_DIR="${WORK_DIR:-/tmp/xnat-backup}"
 SESSION_ID_FILTER="${SESSION_ID_FILTER:-}"
+BACKUP_SOURCE_MODE="${BACKUP_SOURCE_MODE:-local}"
 
 # Optional local offload. When enabled, files in the local XNAT archive are
 # replaced with symlinks only after the matching object-store file is visible
@@ -22,6 +24,7 @@ SESSION_ID_FILTER="${SESSION_ID_FILTER:-}"
 OFFLOAD_AFTER_BACKUP="${OFFLOAD_AFTER_BACKUP:-0}"
 OFFLOAD_EXISTING_BACKUPS="${OFFLOAD_EXISTING_BACKUPS:-0}"
 OFFLOAD_DRY_RUN="${OFFLOAD_DRY_RUN:-0}"
+REPAIR_INCOMPLETE_BACKUPS="${REPAIR_INCOMPLETE_BACKUPS:-0}"
 XNAT_ARCHIVE_ROOT="${XNAT_ARCHIVE_ROOT:-/data/xnat/archive}"
 OBJECT_STORE_MOUNT="${OBJECT_STORE_MOUNT:-/data/xnat/object-store}"
 OBJECT_STORE_LINK_PREFIX="${OBJECT_STORE_LINK_PREFIX:-${OBJECT_STORE_MOUNT}/sessions}"
@@ -99,9 +102,78 @@ local_session_dir() {
 should_keep_local() {
     local path="$1"
     case "$path" in
-        *.xml|*/.*|*.backup_complete) return 0 ;;
+        *.xml|*.log|*/.*|*.backup_complete) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+backup_session_from_local() {
+    local project="$1"
+    local label="$2"
+    local gcs_path="$3"
+    local session_dir
+
+    session_dir=$(local_session_dir "$project" "$label")
+    if [ ! -d "$session_dir" ]; then
+        log "WARN: Cannot back up ${project}/${label}: local session directory not found at ${session_dir}"
+        return 1
+    fi
+
+    log "Syncing local archive ${project}/${label} from ${session_dir} -> ${gcs_path}"
+    if gsutil -m -q rsync -r "$session_dir" "${gcs_path}/" 2>&1; then
+        return 0
+    fi
+
+    log "WARN: Failed to sync local archive ${project}/${label} to GCS"
+    return 1
+}
+
+backup_session_from_rest() {
+    local project="$1"
+    local label="$2"
+    local session_id="$3"
+    local scan_file_count="$4"
+    local exp_file_count="$5"
+    local session_work_dir="$6"
+    local gcs_path="$7"
+    local extract_dir="${session_work_dir}/extract"
+    local session_failed=0
+
+    mkdir -p "$extract_dir"
+
+    log "Downloading ${project}/${label} (${session_id}, ${scan_file_count} scan files, ${exp_file_count} experiment files)..."
+
+    if [ "$scan_file_count" -gt 0 ]; then
+        if ! download_zip \
+            "${project}/${label} scan files" \
+            "${XNAT_URL}/data/experiments/${session_id}/scans/ALL/files?format=zip" \
+            "${session_work_dir}/scan-files.zip" \
+            "$extract_dir"; then
+            session_failed=1
+        fi
+    fi
+
+    if [ "$exp_file_count" -gt 0 ]; then
+        if ! download_zip \
+            "${project}/${label} experiment files" \
+            "${XNAT_URL}/data/experiments/${session_id}/files?format=zip" \
+            "${session_work_dir}/experiment-files.zip" \
+            "$extract_dir"; then
+            session_failed=1
+        fi
+    fi
+
+    if [ "$session_failed" -gt 0 ]; then
+        return 1
+    fi
+
+    log "Syncing REST export ${project}/${label} -> ${gcs_path}"
+    if gsutil -m -q rsync -r "$extract_dir" "${gcs_path}/" 2>&1; then
+        return 0
+    fi
+
+    log "WARN: Failed to upload REST export ${project}/${label} to GCS"
+    return 1
 }
 
 matching_object_file() {
@@ -237,6 +309,12 @@ offload_session() {
 # ── Phase 1: Backup ────────────────────────────────────────────────
 log "=== Phase 1: Backup ==="
 
+case "$BACKUP_SOURCE_MODE" in
+    local|rest) ;;
+    *) die "BACKUP_SOURCE_MODE must be 'local' or 'rest' (got '${BACKUP_SOURCE_MODE}')" ;;
+esac
+log "Backup source mode: ${BACKUP_SOURCE_MODE}"
+
 # Get JSESSION token
 JSESSION=$(curl -sf -u "${XNAT_USER}:${XNAT_PASS}" \
     "${XNAT_URL}/data/JSESSION") || die "Failed to authenticate to XNAT"
@@ -271,17 +349,21 @@ while IFS=$'\t' read -r project label session_id; do
         log "SKIP: ${project}/${label} already backed up"
         if truthy "$OFFLOAD_EXISTING_BACKUPS"; then
             if offload_session "$project" "$label"; then
-                :
+                continue
+            elif truthy "$REPAIR_INCOMPLETE_BACKUPS"; then
+                log "WARN: Refreshing incomplete backup for ${project}/${label}"
+                gsutil -q rm "${GCS_PATH}/.backup_complete" 2>/dev/null || true
             else
                 FAILED=$((FAILED + 1))
+                continue
             fi
+        else
+            continue
         fi
-        continue
     fi
 
     SESSION_WORK_DIR="${WORK_DIR}/${session_id}"
-    EXTRACT_DIR="${SESSION_WORK_DIR}/extract"
-    mkdir -p "$EXTRACT_DIR"
+    mkdir -p "$SESSION_WORK_DIR"
 
     SCANS_JSON="${SESSION_WORK_DIR}/scans.json"
     SCAN_FILES_JSON="${SESSION_WORK_DIR}/scan-files.json"
@@ -337,52 +419,34 @@ while IFS=$'\t' read -r project label session_id; do
         continue
     fi
 
-    log "Downloading ${project}/${label} (${session_id}, ${SCAN_FILE_COUNT} scan files, ${EXP_FILE_COUNT} experiment files)..."
-
-    if [ "$SCAN_FILE_COUNT" -gt 0 ]; then
-        if ! download_zip \
-            "${project}/${label} scan files" \
-            "${XNAT_URL}/data/experiments/${session_id}/scans/ALL/files?format=zip" \
-            "${SESSION_WORK_DIR}/scan-files.zip" \
-            "$EXTRACT_DIR"; then
-            SESSION_FAILED=1
+    if [ "$BACKUP_SOURCE_MODE" = "local" ]; then
+        if ! backup_session_from_local "$project" "$label" "$GCS_PATH"; then
+            FAILED=$((FAILED + 1))
+            rm -rf "$SESSION_WORK_DIR"
+            continue
         fi
-    fi
-
-    if [ "$EXP_FILE_COUNT" -gt 0 ]; then
-        if ! download_zip \
-            "${project}/${label} experiment files" \
-            "${XNAT_URL}/data/experiments/${session_id}/files?format=zip" \
-            "${SESSION_WORK_DIR}/experiment-files.zip" \
-            "$EXTRACT_DIR"; then
-            SESSION_FAILED=1
-        fi
-    fi
-
-    if [ "$SESSION_FAILED" -gt 0 ]; then
-        FAILED=$((FAILED + 1))
-        rm -rf "$SESSION_WORK_DIR"
-        continue
-    fi
-
-    log "Syncing ${project}/${label} -> ${GCS_PATH}"
-    if gsutil -m -q rsync -r "$EXTRACT_DIR" "${GCS_PATH}/" 2>&1; then
-        if truthy "$OFFLOAD_AFTER_BACKUP"; then
-            if ! offload_session "$project" "$label"; then
-                FAILED=$((FAILED + 1))
-                rm -rf "$SESSION_WORK_DIR"
-                continue
-            fi
-        fi
-        # Write marker so we skip on next run. When offload is enabled, this is
-        # written only after local symlink replacement has also succeeded.
-        echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" | gsutil -q cp - "${GCS_PATH}/.backup_complete"
-        BACKED_UP=$((BACKED_UP + 1))
-        log "OK: ${project}/${label} backed up"
     else
-        log "WARN: Failed to upload ${project}/${label} to GCS"
-        FAILED=$((FAILED + 1))
+        if ! backup_session_from_rest "$project" "$label" "$session_id" \
+            "$SCAN_FILE_COUNT" "$EXP_FILE_COUNT" "$SESSION_WORK_DIR" "$GCS_PATH"; then
+            FAILED=$((FAILED + 1))
+            rm -rf "$SESSION_WORK_DIR"
+            continue
+        fi
     fi
+
+    if truthy "$OFFLOAD_AFTER_BACKUP"; then
+        if ! offload_session "$project" "$label"; then
+            FAILED=$((FAILED + 1))
+            rm -rf "$SESSION_WORK_DIR"
+            continue
+        fi
+    fi
+
+    # Write marker so we skip on next run. When offload is enabled, this is
+    # written only after local symlink replacement has also succeeded.
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" | gsutil -q cp - "${GCS_PATH}/.backup_complete"
+    BACKED_UP=$((BACKED_UP + 1))
+    log "OK: ${project}/${label} backed up"
 
     # Clean up temp files
     rm -rf "$SESSION_WORK_DIR"
