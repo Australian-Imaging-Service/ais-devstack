@@ -196,7 +196,7 @@ offload_session() {
     local offloaded=0
     local skipped=0
     local failed=0
-    local file rel object_file local_size object_size tmp_file
+    local file rel object_file local_size object_size tmp_link
 
     while IFS= read -r -d '' file; do
         if should_keep_local "$file"; then
@@ -220,15 +220,11 @@ offload_session() {
             continue
         fi
 
-        tmp_file="${file}.offload-tmp.$$"
-        if mv "$file" "$tmp_file" && ln -s "$object_file" "$file"; then
-            rm -f "$tmp_file"
+        tmp_link="${file}.offload-link.$$"
+        if ln -s "$object_file" "$tmp_link" && mv -Tf "$tmp_link" "$file"; then
             offloaded=$((offloaded + 1))
         else
-            rm -f "$file"
-            if [ -e "$tmp_file" ]; then
-                mv "$tmp_file" "$file"
-            fi
+            rm -f "$tmp_link"
             log "WARN: Failed to replace ${file} with symlink"
             failed=$((failed + 1))
         fi
