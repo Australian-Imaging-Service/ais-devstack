@@ -1,0 +1,110 @@
+{
+  "name": "aslprep-bids",
+  "label": "ASLPrep",
+  "description": "Runs ASLPrep on an XNAT MR session after converting scan-level NIFTI and BIDS sidecar resources to a BIDS layout.",
+  "version": "26.0.3-ais.1",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "pennlinc/aslprep:26.0.3",
+  "index": "https://index.docker.io/v1/",
+  "info-url": "https://aslprep.readthedocs.io/",
+  "command-line": "bash -lc 'set -euo pipefail; mkdir -p /work/home /work/templateflow; aslprep /input /output participant --skip-bids-validation --notrack --fs-no-reconall --nprocs \"$ASLPREP_NPROCS\" --omp-nthreads \"$ASLPREP_OMP_NTHREADS\" --mem \"$ASLPREP_MEMORY_GB\" -w /work'",
+  "working-directory": "/work",
+  "override-entrypoint": true,
+  "reserve-memory": "8192",
+  "limit-memory": "32768",
+  "limit-cpu": "8.0",
+  "environment-variables": {
+    "HOME": "/work/home",
+    "MPLCONFIGDIR": "/work/matplotlib",
+    "TEMPLATEFLOW_HOME": "/work/templateflow",
+    "ASLPREP_NPROCS": "#NPROCS#",
+    "ASLPREP_OMP_NTHREADS": "#OMP_NTHREADS#",
+    "ASLPREP_MEMORY_GB": "#MEMORY_GB#"
+  },
+  "mounts": [
+    {
+      "name": "bids-in",
+      "writable": false,
+      "path": "/input"
+    },
+    {
+      "name": "aslprep-out",
+      "writable": true,
+      "path": "/output"
+    },
+    {
+      "name": "work",
+      "writable": true,
+      "path": "/work"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "nprocs",
+      "label": "CPU processes",
+      "description": "Maximum number of ASLPrep worker processes.",
+      "type": "number",
+      "required": true,
+      "default-value": "4",
+      "replacement-key": "#NPROCS#"
+    },
+    {
+      "name": "omp-nthreads",
+      "label": "Threads per process",
+      "description": "Maximum number of OpenMP threads used by ANTs and similar tools.",
+      "type": "number",
+      "required": true,
+      "default-value": "2",
+      "replacement-key": "#OMP_NTHREADS#"
+    },
+    {
+      "name": "memory-gb",
+      "label": "Memory GB",
+      "description": "Memory limit ASLPrep should assume for workflow scheduling.",
+      "type": "number",
+      "required": true,
+      "default-value": "16",
+      "replacement-key": "#MEMORY_GB#"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "aslprep-output",
+      "description": "ASLPrep derivatives, reports, logs, and boilerplate.",
+      "mount": "aslprep-out",
+      "required": true
+    }
+  ],
+  "xnat": [
+    {
+      "name": "aslprep-session",
+      "label": "ASLPrep",
+      "description": "Run ASLPrep on this MR session",
+      "contexts": [
+        "xnat:mrSessionData"
+      ],
+      "external-inputs": [
+        {
+          "name": "session",
+          "description": "Input MR session. The session must contain scan-level NIFTI resources and BIDS JSON sidecar resources.",
+          "type": "Session",
+          "required": true,
+          "provides-files-for-command-mount": "bids-in",
+          "via-setup-command": "xnat/xnat2bids-setup:1.4:xnat2bids",
+          "load-children": false
+        }
+      ],
+      "derived-inputs": [],
+      "output-handlers": [
+        {
+          "name": "aslprep-resource",
+          "accepts-command-output": "aslprep-output",
+          "as-a-child-of": "session",
+          "type": "Resource",
+          "label": "ASLPREP"
+        }
+      ]
+    }
+  ]
+}

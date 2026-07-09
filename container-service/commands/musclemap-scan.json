@@ -1,0 +1,155 @@
+{
+  "name": "musclemap-nifti",
+  "label": "MuscleMap",
+  "description": "Runs Neurodesk MuscleMap on the first NIfTI file in a scan-level NIFTI resource or xnat2bids-staged MR session and stores the derived segmentation in XNAT.",
+  "version": "1.3.45-ais.2",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "vnmd/musclemap_1.3.45:20260701",
+  "index": "https://index.docker.io/v1/",
+  "info-url": "https://github.com/NeuroDesk/neurocontainers/tree/main/recipes/musclemap",
+  "command-line": "bash -lc 'set -euo pipefail; input=\"$(find -L /input -type f \\( -iname \"*.nii\" -o -iname \"*.nii.gz\" \\) | sort | head -n 1)\"; if [ -z \"$input\" ]; then echo \"No NIfTI file found in /input\" >&2; exit 2; fi; case \"$MUSCLEMAP_BODY_REGION\" in wholebody|abdomen|forearm|pelvis|thigh|leg) ;; *) echo \"Invalid MuscleMap body region: $MUSCLEMAP_BODY_REGION\" >&2; exit 2;; esac; case \"$MUSCLEMAP_USE_GPU\" in Y|N) ;; *) echo \"Invalid MuscleMap GPU flag: $MUSCLEMAP_USE_GPU\" >&2; exit 2;; esac; if ! printf \"%s\" \"$MUSCLEMAP_SPATIAL_OVERLAP\" | grep -Eq \"^[0-9]+([.][0-9]+)?$\"; then echo \"Invalid MuscleMap spatial overlap: $MUSCLEMAP_SPATIAL_OVERLAP\" >&2; exit 2; fi; mm_segment -i \"$input\" -o /output -r \"$MUSCLEMAP_BODY_REGION\" -c \"$MUSCLEMAP_CHUNK_SIZE\" -s \"$MUSCLEMAP_SPATIAL_OVERLAP\" -g \"$MUSCLEMAP_USE_GPU\"'",
+  "working-directory": "/work",
+  "override-entrypoint": true,
+  "reserve-memory": "8192",
+  "limit-memory": "32768",
+  "limit-cpu": "4.0",
+  "environment-variables": {
+    "MUSCLEMAP_BODY_REGION": "#BODY_REGION#",
+    "MUSCLEMAP_CHUNK_SIZE": "#CHUNK_SIZE#",
+    "MUSCLEMAP_SPATIAL_OVERLAP": "#SPATIAL_OVERLAP#",
+    "MUSCLEMAP_USE_GPU": "#USE_GPU#"
+  },
+  "mounts": [
+    {
+      "name": "nifti-in",
+      "writable": false,
+      "path": "/input"
+    },
+    {
+      "name": "musclemap-out",
+      "writable": true,
+      "path": "/output"
+    },
+    {
+      "name": "work",
+      "writable": true,
+      "path": "/work"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "body-region",
+      "label": "Body region",
+      "description": "MuscleMap model region. Supported values: wholebody, abdomen, forearm, pelvis, thigh, leg.",
+      "type": "string",
+      "required": true,
+      "default-value": "wholebody",
+      "replacement-key": "#BODY_REGION#"
+    },
+    {
+      "name": "chunk-size",
+      "label": "Chunk size",
+      "description": "Number of axial slices per inference chunk, or auto.",
+      "type": "string",
+      "required": true,
+      "default-value": "auto",
+      "replacement-key": "#CHUNK_SIZE#"
+    },
+    {
+      "name": "spatial-overlap",
+      "label": "Spatial overlap",
+      "description": "Sliding-window spatial overlap percentage.",
+      "type": "number",
+      "required": true,
+      "default-value": "50",
+      "replacement-key": "#SPATIAL_OVERLAP#"
+    },
+    {
+      "name": "use-gpu",
+      "label": "Use GPU",
+      "description": "Use CUDA when the Docker host has a compatible GPU runtime.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "Y",
+      "false-value": "N",
+      "replacement-key": "#USE_GPU#"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "musclemap-output",
+      "description": "MuscleMap segmentation outputs.",
+      "mount": "musclemap-out",
+      "required": true
+    }
+  ],
+  "xnat": [
+    {
+      "name": "musclemap-scan",
+      "label": "MuscleMap",
+      "description": "Run Neurodesk MuscleMap on this scan's NIFTI resource",
+      "contexts": [
+        "xnat:imageScanData"
+      ],
+      "external-inputs": [
+        {
+          "name": "scan",
+          "description": "Input scan with a NIFTI resource.",
+          "type": "Scan",
+          "required": true,
+          "matcher": "'NIFTI' in @.resources[*].label"
+        }
+      ],
+      "derived-inputs": [
+        {
+          "name": "scan-nifti",
+          "description": "The scan-level NIFTI resource.",
+          "type": "Resource",
+          "derived-from-wrapper-input": "scan",
+          "provides-files-for-command-mount": "nifti-in",
+          "matcher": "@.label == 'NIFTI'"
+        }
+      ],
+      "output-handlers": [
+        {
+          "name": "musclemap-resource",
+          "accepts-command-output": "musclemap-output",
+          "as-a-child-of": "scan",
+          "type": "Resource",
+          "label": "MUSCLEMAP"
+        }
+      ]
+    },
+    {
+      "name": "musclemap-session",
+      "label": "MuscleMap",
+      "description": "Run Neurodesk MuscleMap on this MR session",
+      "contexts": [
+        "xnat:mrSessionData"
+      ],
+      "external-inputs": [
+        {
+          "name": "session",
+          "description": "Input MR session. The session must contain scan-level NIFTI resources and BIDS JSON sidecar resources.",
+          "type": "Session",
+          "required": true,
+          "provides-files-for-command-mount": "nifti-in",
+          "via-setup-command": "xnat/xnat2bids-setup:1.4:xnat2bids",
+          "load-children": false
+        }
+      ],
+      "derived-inputs": [],
+      "output-handlers": [
+        {
+          "name": "musclemap-session-resource",
+          "accepts-command-output": "musclemap-output",
+          "as-a-child-of": "session",
+          "type": "Resource",
+          "label": "MUSCLEMAP"
+        }
+      ]
+    }
+  ]
+}

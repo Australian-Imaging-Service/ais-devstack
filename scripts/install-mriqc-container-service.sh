@@ -10,10 +10,29 @@ XNAT_ADMIN_SECRET="${XNAT_ADMIN_SECRET:-xnat-archiver-creds}"
 XNAT_ADMIN_USER="${XNAT_ADMIN_USER:-admin}"
 KUBECTL_CMD="${KUBECTL_CMD:-sudo kubectl}"
 CONTAINER_SERVICE_ENABLE_PROJECTS="${CONTAINER_SERVICE_ENABLE_PROJECTS:-${MRIQC_ENABLE_PROJECTS:-all}}"
+XNAT_COOKIE_JAR=""
 
 SETUP_COMMAND_JSON="${REPO_ROOT}/container-service/commands/xnat2bids-setup.json"
 MRIQC_COMMAND_JSON="${REPO_ROOT}/container-service/commands/mriqc-session.json"
 DCM2BIDS_COMMAND_JSON="${REPO_ROOT}/container-service/commands/dcm2bids-session.json"
+DCM2NIIX_COMMAND_JSON="${REPO_ROOT}/container-service/commands/dcm2niix-scan.json"
+FMRIPREP_COMMAND_JSON="${REPO_ROOT}/container-service/commands/fmriprep-session.json"
+ASLPREP_COMMAND_JSON="${REPO_ROOT}/container-service/commands/aslprep-session.json"
+QSMXT_COMMAND_JSON="${REPO_ROOT}/container-service/commands/qsmxt-session.json"
+MUSCLEMAP_COMMAND_JSON="${REPO_ROOT}/container-service/commands/musclemap-scan.json"
+SCT_COMMAND_JSON="${REPO_ROOT}/container-service/commands/spinalcordtoolbox-scan.json"
+
+COMMAND_JSON_FILES=(
+  "${SETUP_COMMAND_JSON}"
+  "${MRIQC_COMMAND_JSON}"
+  "${DCM2BIDS_COMMAND_JSON}"
+  "${DCM2NIIX_COMMAND_JSON}"
+  "${FMRIPREP_COMMAND_JSON}"
+  "${ASLPREP_COMMAND_JSON}"
+  "${QSMXT_COMMAND_JSON}"
+  "${MUSCLEMAP_COMMAND_JSON}"
+  "${SCT_COMMAND_JSON}"
+)
 
 require_file() {
   local path="$1"
@@ -61,14 +80,14 @@ curl_xnat() {
 
   if [[ -n "${data_file}" ]]; then
     status="$(curl -sS -o "${body_file}" -w '%{http_code}' \
-      -u "${XNAT_ADMIN_USER}:${XNAT_ADMIN_PASSWORD}" \
+      -b "${XNAT_COOKIE_JAR}" \
       -X "${method}" \
       -H 'Content-Type: application/json;charset=UTF-8' \
       --data-binary @"${data_file}" \
       "${XNAT_BASE_URL}${path}")"
   else
     status="$(curl -sS -o "${body_file}" -w '%{http_code}' \
-      -u "${XNAT_ADMIN_USER}:${XNAT_ADMIN_PASSWORD}" \
+      -b "${XNAT_COOKIE_JAR}" \
       -X "${method}" \
       "${XNAT_BASE_URL}${path}")"
   fi
@@ -82,6 +101,33 @@ curl_xnat() {
 
   cat "${body_file}"
   rm -f "${body_file}"
+}
+
+start_xnat_session() {
+  local status body_file
+  XNAT_COOKIE_JAR="$(mktemp)"
+  body_file="$(mktemp)"
+  status="$(curl -sS -o "${body_file}" -w '%{http_code}' \
+    -c "${XNAT_COOKIE_JAR}" \
+    -u "${XNAT_ADMIN_USER}:${XNAT_ADMIN_PASSWORD}" \
+    -X POST \
+    "${XNAT_BASE_URL}/data/JSESSION")"
+
+  if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
+    echo "XNAT login failed with HTTP ${status}" >&2
+    cat "${body_file}" >&2
+    rm -f "${body_file}"
+    exit 1
+  fi
+
+  rm -f "${body_file}"
+}
+
+end_xnat_session() {
+  if [[ -n "${XNAT_COOKIE_JAR}" && -f "${XNAT_COOKIE_JAR}" ]]; then
+    curl -sS -o /dev/null -b "${XNAT_COOKIE_JAR}" -X DELETE "${XNAT_BASE_URL}/data/JSESSION" || true
+    rm -f "${XNAT_COOKIE_JAR}"
+  fi
 }
 
 command_id_by_name() {
@@ -158,16 +204,14 @@ enable_wrapper_for_projects() {
   done < <(project_ids_to_enable)
 }
 
-require_file "${SETUP_COMMAND_JSON}"
-require_file "${MRIQC_COMMAND_JSON}"
-require_file "${DCM2BIDS_COMMAND_JSON}"
 require_bin curl
 require_bin jq
 require_bin base64
 
-jq empty "${SETUP_COMMAND_JSON}"
-jq empty "${MRIQC_COMMAND_JSON}"
-jq empty "${DCM2BIDS_COMMAND_JSON}"
+for command_json in "${COMMAND_JSON_FILES[@]}"; do
+  require_file "${command_json}"
+  jq empty "${command_json}"
+done
 
 XNAT_ADMIN_PASSWORD="$(kubectl_cmd -n "${XNAT_NAMESPACE}" get secret "${XNAT_ADMIN_SECRET}" -o jsonpath='{.data.password}' | base64 -d)"
 if [[ -z "${XNAT_ADMIN_PASSWORD}" ]]; then
@@ -176,25 +220,66 @@ if [[ -z "${XNAT_ADMIN_PASSWORD}" ]]; then
 fi
 
 XNAT_BASE_URL="$(api_url)"
+trap end_xnat_session EXIT
+start_xnat_session
 
 echo "Installing Container Service commands into ${XNAT_BASE_URL}"
 setup_id="$(upsert_command "${SETUP_COMMAND_JSON}")"
 mriqc_id="$(upsert_command "${MRIQC_COMMAND_JSON}")"
 dcm2bids_id="$(upsert_command "${DCM2BIDS_COMMAND_JSON}")"
+dcm2niix_id="$(upsert_command "${DCM2NIIX_COMMAND_JSON}")"
+fmriprep_id="$(upsert_command "${FMRIPREP_COMMAND_JSON}")"
+aslprep_id="$(upsert_command "${ASLPREP_COMMAND_JSON}")"
+qsmxt_id="$(upsert_command "${QSMXT_COMMAND_JSON}")"
+musclemap_id="$(upsert_command "${MUSCLEMAP_COMMAND_JSON}")"
+sct_id="$(upsert_command "${SCT_COMMAND_JSON}")"
 
 set_public_visibility "${setup_id}"
 set_public_visibility "${mriqc_id}"
 set_public_visibility "${dcm2bids_id}"
+set_public_visibility "${dcm2niix_id}"
+set_public_visibility "${fmriprep_id}"
+set_public_visibility "${aslprep_id}"
+set_public_visibility "${qsmxt_id}"
+set_public_visibility "${musclemap_id}"
+set_public_visibility "${sct_id}"
 
 enable_wrapper_sitewide "${mriqc_id}" "mriqc-session"
 enable_wrapper_sitewide "${dcm2bids_id}" "dcm2bids-session-session"
+enable_wrapper_sitewide "${dcm2niix_id}" "dcm2niix-scan"
+enable_wrapper_sitewide "${fmriprep_id}" "fmriprep-session"
+enable_wrapper_sitewide "${aslprep_id}" "aslprep-session"
+enable_wrapper_sitewide "${qsmxt_id}" "qsmxt-session"
+enable_wrapper_sitewide "${musclemap_id}" "musclemap-scan"
+enable_wrapper_sitewide "${musclemap_id}" "musclemap-session"
+enable_wrapper_sitewide "${sct_id}" "spinalcordtoolbox-deepseg-scan"
 
 enable_wrapper_for_projects "${mriqc_id}" "mriqc-session"
 enable_wrapper_for_projects "${dcm2bids_id}" "dcm2bids-session-session"
+enable_wrapper_for_projects "${dcm2niix_id}" "dcm2niix-scan"
+enable_wrapper_for_projects "${fmriprep_id}" "fmriprep-session"
+enable_wrapper_for_projects "${aslprep_id}" "aslprep-session"
+enable_wrapper_for_projects "${qsmxt_id}" "qsmxt-session"
+enable_wrapper_for_projects "${musclemap_id}" "musclemap-scan"
+enable_wrapper_for_projects "${musclemap_id}" "musclemap-session"
+enable_wrapper_for_projects "${sct_id}" "spinalcordtoolbox-deepseg-scan"
 
 verify_wrapper_enabled "${mriqc_id}" "mriqc-session"
 verify_wrapper_enabled "${dcm2bids_id}" "dcm2bids-session-session"
+verify_wrapper_enabled "${dcm2niix_id}" "dcm2niix-scan"
+verify_wrapper_enabled "${fmriprep_id}" "fmriprep-session"
+verify_wrapper_enabled "${aslprep_id}" "aslprep-session"
+verify_wrapper_enabled "${qsmxt_id}" "qsmxt-session"
+verify_wrapper_enabled "${musclemap_id}" "musclemap-scan"
+verify_wrapper_enabled "${musclemap_id}" "musclemap-session"
+verify_wrapper_enabled "${sct_id}" "spinalcordtoolbox-deepseg-scan"
 
 echo "Installed xnat2bids setup command id ${setup_id}"
 echo "Installed MRIQC command id ${mriqc_id}; wrapper mriqc-session is enabled site-wide"
 echo "Installed DICOM-to-BIDS command id ${dcm2bids_id}; wrapper dcm2bids-session-session is enabled site-wide"
+echo "Installed dcm2niix command id ${dcm2niix_id}; wrapper dcm2niix-scan is enabled site-wide"
+echo "Installed fMRIPrep command id ${fmriprep_id}; wrapper fmriprep-session is enabled site-wide"
+echo "Installed ASLPrep command id ${aslprep_id}; wrapper aslprep-session is enabled site-wide"
+echo "Installed QSMxT command id ${qsmxt_id}; wrapper qsmxt-session is enabled site-wide"
+echo "Installed MuscleMap command id ${musclemap_id}; wrappers musclemap-scan and musclemap-session are enabled site-wide"
+echo "Installed Spinal Cord Toolbox command id ${sct_id}; wrapper spinalcordtoolbox-deepseg-scan is enabled site-wide"

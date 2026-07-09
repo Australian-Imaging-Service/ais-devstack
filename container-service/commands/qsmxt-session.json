@@ -1,0 +1,113 @@
+{
+  "name": "qsmxt-bids",
+  "label": "QSMxT",
+  "description": "Runs Neurodesk QSMxT on an XNAT MR session after converting scan-level NIFTI and BIDS sidecar resources to a BIDS layout.",
+  "version": "8.3.2-ais.1",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "vnmd/qsmxt_8.3.2:20260421",
+  "index": "https://index.docker.io/v1/",
+  "info-url": "https://qsmxt.github.io/QSMxT/",
+  "command-line": "bash -lc 'set -euo pipefail; case \"$QSMXT_PREMADE\" in default|gre|epi|bet|fast|body|nextqsm) ;; *) echo \"Invalid QSMxT premade pipeline: $QSMXT_PREMADE\" >&2; exit 2;; esac; args=(/work/bids --premade \"$QSMXT_PREMADE\" --do_qsm --auto_yes); case \"$QSMXT_DO_SEGMENTATION\" in true) args+=(--do_segmentation);; false) ;; *) echo \"Invalid QSMxT segmentation flag: $QSMXT_DO_SEGMENTATION\" >&2; exit 2;; esac; case \"$QSMXT_DO_ANALYSIS\" in true) args+=(--do_analysis);; false) ;; *) echo \"Invalid QSMxT analysis flag: $QSMXT_DO_ANALYSIS\" >&2; exit 2;; esac; mkdir -p /work/home /work/matplotlib /work/bids /output; cp -a /input/. /work/bids/; qsmxt \"${args[@]}\"; if [ ! -d /work/bids/derivatives ]; then echo \"QSMxT produced no derivatives directory\" >&2; exit 3; fi; cp -a /work/bids/derivatives/. /output/'",
+  "working-directory": "/work",
+  "override-entrypoint": true,
+  "reserve-memory": "8192",
+  "limit-memory": "32768",
+  "limit-cpu": "8.0",
+  "environment-variables": {
+    "HOME": "/work/home",
+    "MPLCONFIGDIR": "/work/matplotlib",
+    "QSMXT_PREMADE": "#PREMADE#",
+    "QSMXT_DO_SEGMENTATION": "#DO_SEGMENTATION#",
+    "QSMXT_DO_ANALYSIS": "#DO_ANALYSIS#"
+  },
+  "mounts": [
+    {
+      "name": "bids-in",
+      "writable": false,
+      "path": "/input"
+    },
+    {
+      "name": "qsmxt-out",
+      "writable": true,
+      "path": "/output"
+    },
+    {
+      "name": "work",
+      "writable": true,
+      "path": "/work"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "premade",
+      "label": "Premade pipeline",
+      "description": "QSMxT premade pipeline. Supported values: default, gre, epi, bet, fast, body, nextqsm.",
+      "type": "string",
+      "required": true,
+      "default-value": "gre",
+      "replacement-key": "#PREMADE#"
+    },
+    {
+      "name": "do-segmentation",
+      "label": "Segmentation",
+      "description": "Run QSMxT segmentation outputs in addition to QSM reconstruction.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_SEGMENTATION#"
+    },
+    {
+      "name": "do-analysis",
+      "label": "Analysis CSVs",
+      "description": "Run QSMxT analysis export. Usually enable segmentation as well.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_ANALYSIS#"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "qsmxt-output",
+      "description": "QSMxT derivatives copied from the BIDS derivatives directory.",
+      "mount": "qsmxt-out",
+      "required": true
+    }
+  ],
+  "xnat": [
+    {
+      "name": "qsmxt-session",
+      "label": "QSMxT",
+      "description": "Run QSMxT on this MR session",
+      "contexts": [
+        "xnat:mrSessionData"
+      ],
+      "external-inputs": [
+        {
+          "name": "session",
+          "description": "Input MR session. The session must contain BIDS-compatible QSM scan resources, typically part-mag and part-phase T2starw NIFTI files with BIDS JSON sidecars.",
+          "type": "Session",
+          "required": true,
+          "provides-files-for-command-mount": "bids-in",
+          "via-setup-command": "xnat/xnat2bids-setup:1.4:xnat2bids",
+          "load-children": false
+        }
+      ],
+      "derived-inputs": [],
+      "output-handlers": [
+        {
+          "name": "qsmxt-resource",
+          "accepts-command-output": "qsmxt-output",
+          "as-a-child-of": "session",
+          "type": "Resource",
+          "label": "QSMXT"
+        }
+      ]
+    }
+  ]
+}

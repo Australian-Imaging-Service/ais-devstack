@@ -1,0 +1,75 @@
+--- a/src/main/java/org/nrg/containers/model/container/auto/Container.java
++++ b/src/main/java/org/nrg/containers/model/container/auto/Container.java
+@@
+ import javax.annotation.Nullable;
+ import javax.validation.constraints.NotNull;
+ import java.io.Serializable;
++import java.nio.file.Files;
++import java.nio.file.Paths;
+ import java.util.ArrayList;
+ import java.util.Collection;
+ import java.util.Collections;
+@@
+ public abstract class Container implements Serializable {
+     private static final long serialVersionUID = -6810388804754801990L;
++    private static final String DEFAULT_OBJECT_STORE_MOUNT = "/data/xnat/object-store";
+ 
+     @JsonIgnore private volatile List<String> _bindMountStrings = null;
+@@
+     public List<String> bindMountStrings() {
+         if (_bindMountStrings == null) {
+             _bindMountStrings = mounts().stream().map(ContainerMount::toBindMountString).collect(Collectors.toList());
++            appendObjectStoreBindMount(_bindMountStrings);
+         }
+         return _bindMountStrings;
+     }
++
++    private void appendObjectStoreBindMount(final List<String> bindMountStrings) {
++        if (!Backend.DOCKER.equals(backend())) {
++            return;
++        }
++        final String objectStorePath = objectStorePath();
++        if (StringUtils.isBlank(objectStorePath) || !Files.isDirectory(Paths.get(objectStorePath))) {
++            return;
++        }
++        for (final String bindMountString : bindMountStrings) {
++            if (bindUsesPath(bindMountString, objectStorePath)) {
++                return;
++            }
++        }
++        bindMountStrings.add(objectStorePath + ":" + objectStorePath + ":ro");
++    }
++
++    private static boolean bindUsesPath(final String bindMountString, final String path) {
++        if (StringUtils.isBlank(bindMountString)) {
++            return false;
++        }
++        final int firstSeparator = bindMountString.indexOf(":");
++        if (firstSeparator < 0) {
++            return bindMountString.equals(path);
++        }
++        final String source = bindMountString.substring(0, firstSeparator);
++        final int secondSeparator = bindMountString.indexOf(":", firstSeparator + 1);
++        final String target = secondSeparator < 0 ?
++                bindMountString.substring(firstSeparator + 1) :
++                bindMountString.substring(firstSeparator + 1, secondSeparator);
++        return source.equals(path) || target.equals(path);
++    }
++
++    private static String objectStorePath() {
++        String configured = System.getProperty("xnat.containerService.objectStoreMount");
++        if (StringUtils.isBlank(configured)) {
++            configured = System.getenv("XNAT_CONTAINER_SERVICE_OBJECT_STORE_MOUNT");
++        }
++        if (StringUtils.isBlank(configured)) {
++            configured = DEFAULT_OBJECT_STORE_MOUNT;
++        }
++        configured = configured.trim();
++        while (configured.length() > 1 && configured.endsWith("/")) {
++            configured = configured.substring(0, configured.length() - 1);
++        }
++        return configured;
++    }
+ 
+     @JsonIgnore
+     @Nonnull

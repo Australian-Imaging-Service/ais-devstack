@@ -1,0 +1,106 @@
+{
+  "name": "spinalcordtoolbox-deepseg",
+  "label": "Spinal Cord Toolbox",
+  "description": "Runs Neurodesk Spinal Cord Toolbox sct_deepseg on the first NIfTI file in a scan-level NIFTI resource and stores the derived segmentation on the scan.",
+  "version": "7.3.0-ais.1",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "vnmd/spinalcordtoolbox_7.3.0:20260605",
+  "index": "https://index.docker.io/v1/",
+  "info-url": "https://github.com/NeuroDesk/neurocontainers/tree/main/recipes/spinalcordtoolbox",
+  "command-line": "bash -lc 'set -euo pipefail; input=\"$(find -L /input -type f \\( -iname \"*.nii\" -o -iname \"*.nii.gz\" \\) | sort | head -n 1)\"; if [ -z \"$input\" ]; then echo \"No NIfTI file found in /input\" >&2; exit 2; fi; case \"$SCT_DEEPSEG_TASK\" in spinalcord|sc_epi|sc_lumbar_t2|sc_mouse_t1|graymatter|gm_sc_7t_t2star|gm_wm_exvivo_t2|gm_mouse_t1|gm_wm_mouse_t1|lesion_ms|lesion_ms_axial_t2|lesion_ms_mp2rage|lesion_sci_t2|tumor_t2|rootlets|sc_canal_t2|spine) ;; *) echo \"Invalid SCT deepseg task: $SCT_DEEPSEG_TASK\" >&2; exit 2;; esac; qc_args=(); case \"$SCT_WRITE_QC\" in true) qc_args=(-qc /output/qc);; false) ;; *) echo \"Invalid SCT QC flag: $SCT_WRITE_QC\" >&2; exit 2;; esac; sct_deepseg \"$SCT_DEEPSEG_TASK\" -i \"$input\" -o \"/output/sct_${SCT_DEEPSEG_TASK}_seg.nii.gz\" \"${qc_args[@]}\"'",
+  "working-directory": "/work",
+  "override-entrypoint": true,
+  "reserve-memory": "4096",
+  "limit-memory": "16384",
+  "limit-cpu": "4.0",
+  "environment-variables": {
+    "SCT_DEEPSEG_TASK": "#SCT_TASK#",
+    "SCT_WRITE_QC": "#WRITE_QC#"
+  },
+  "mounts": [
+    {
+      "name": "nifti-in",
+      "writable": false,
+      "path": "/input"
+    },
+    {
+      "name": "sct-out",
+      "writable": true,
+      "path": "/output"
+    },
+    {
+      "name": "work",
+      "writable": true,
+      "path": "/work"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "sct-task",
+      "label": "SCT task",
+      "description": "sct_deepseg task. Supported values include spinalcord, graymatter, lesion_ms, rootlets, sc_canal_t2, and spine.",
+      "type": "string",
+      "required": true,
+      "default-value": "spinalcord",
+      "replacement-key": "#SCT_TASK#"
+    },
+    {
+      "name": "write-qc",
+      "label": "Write QC",
+      "description": "Write SCT QC report files into the output resource.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#WRITE_QC#"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "sct-output",
+      "description": "Spinal Cord Toolbox segmentation outputs.",
+      "mount": "sct-out",
+      "required": true
+    }
+  ],
+  "xnat": [
+    {
+      "name": "spinalcordtoolbox-deepseg-scan",
+      "label": "Spinal Cord Toolbox",
+      "description": "Run Neurodesk Spinal Cord Toolbox sct_deepseg on this scan's NIFTI resource",
+      "contexts": [
+        "xnat:imageScanData"
+      ],
+      "external-inputs": [
+        {
+          "name": "scan",
+          "description": "Input scan with a NIFTI resource.",
+          "type": "Scan",
+          "required": true,
+          "matcher": "'NIFTI' in @.resources[*].label"
+        }
+      ],
+      "derived-inputs": [
+        {
+          "name": "scan-nifti",
+          "description": "The scan-level NIFTI resource.",
+          "type": "Resource",
+          "derived-from-wrapper-input": "scan",
+          "provides-files-for-command-mount": "nifti-in",
+          "matcher": "@.label == 'NIFTI'"
+        }
+      ],
+      "output-handlers": [
+        {
+          "name": "sct-resource",
+          "accepts-command-output": "sct-output",
+          "as-a-child-of": "scan",
+          "type": "Resource",
+          "label": "SCT"
+        }
+      ]
+    }
+  ]
+}
