@@ -1,7 +1,7 @@
 #!/bin/bash
 # XNAT GCS Archiver Setup Script
-# Creates secrets, builds the archiver container, and deploys the CronJob
-# for nightly backup of XNAT sessions and PostgreSQL to GCS
+# Creates secrets, builds the archiver/FUSE containers, and deploys the
+# CronJob plus read-only GCS FUSE mount for XNAT archive offload.
 set -e
 
 # Color codes
@@ -105,7 +105,7 @@ fi
 echo ""
 
 # ── Step 2: Create Kubernetes Secrets ──────────────────────────────
-echo -e "${BLUE}[Step 1/4] Creating Kubernetes Secrets...${NC}"
+echo -e "${BLUE}[Step 1/5] Creating Kubernetes Secrets...${NC}"
 
 kubectl create namespace ais-xnat 2>/dev/null || true
 
@@ -116,7 +116,9 @@ kubectl -n ais-xnat create secret generic gcs-sa-key \
 
 # Update the CronJob manifest to reference the correct key filename
 CRONJOB_FILE="$BASE_DIR/manifests/archive-cronjob.yaml"
+GCS_FUSE_FILE="$BASE_DIR/manifests/gcs-fuse-mount.yaml"
 sed -i "s|key: .*\.json|key: ${SA_KEY_FILENAME}|" "$CRONJOB_FILE"
+sed -i "s|key: .*\.json|key: ${SA_KEY_FILENAME}|" "$GCS_FUSE_FILE"
 
 # XNAT archiver credentials
 kubectl -n ais-xnat delete secret xnat-archiver-creds 2>/dev/null || true
@@ -128,7 +130,7 @@ kubectl -n ais-xnat create secret generic xnat-archiver-creds \
 check_status $?
 
 # ── Step 3: Build and load container image ────────────────────────
-echo -e "${BLUE}[Step 2/4] Building archiver container image...${NC}"
+echo -e "${BLUE}[Step 2/5] Building archiver container image...${NC}"
 
 docker build -t "$IMAGE_NAME" "$BASE_DIR/archiver/"
 
@@ -137,12 +139,22 @@ echo "Importing image into k3s..."
 docker save "$IMAGE_NAME" | sudo k3s ctr images import -
 check_status $?
 
-# ── Step 4: Deploy CronJob ────────────────────────────────────────
-echo -e "${BLUE}[Step 3/4] Deploying archiver CronJob...${NC}"
+# ── Step 4: Build FUSE mount image ────────────────────────────────
+echo -e "${BLUE}[Step 3/5] Building GCS FUSE mount image...${NC}"
+
+docker build -t xnat-gcsfuse:latest "$BASE_DIR/gcsfuse/"
+
+echo "Importing image into k3s..."
+docker save xnat-gcsfuse:latest | sudo k3s ctr images import -
+check_status $?
+
+# ── Step 5: Deploy CronJob and FUSE mount ─────────────────────────
+echo -e "${BLUE}[Step 4/5] Deploying archiver CronJob and GCS FUSE mount...${NC}"
 
 # Update bucket name in CronJob if different from default
 if [ "$GCS_BUCKET" != "xnat-lucas-archive" ]; then
     sed -i "s/value: \"xnat-lucas-archive\"/value: \"${GCS_BUCKET}\"/" "$CRONJOB_FILE"
+    sed -i "s/value: \"xnat-lucas-archive\"/value: \"${GCS_BUCKET}\"/" "$GCS_FUSE_FILE"
 fi
 
 # Update image name if different from default
@@ -151,12 +163,16 @@ if [ "$IMAGE_NAME" != "xnat-gcs-archiver:latest" ]; then
 fi
 
 kubectl apply -f "$CRONJOB_FILE"
+kubectl apply -f "$GCS_FUSE_FILE"
+sudo mkdir -p /data/xnat
+sudo ln -sfn /srv/xnat-local-storage/gpfs/object-store /data/xnat/object-store
 check_status $?
 
 # ── Verify ────────────────────────────────────────────────────────
-echo -e "${BLUE}[Step 4/4] Verifying deployment...${NC}"
+echo -e "${BLUE}[Step 5/5] Verifying deployment...${NC}"
 
 kubectl -n ais-xnat get cronjob xnat-gcs-archiver
+kubectl -n ais-xnat get daemonset xnat-gcs-fuse
 check_status $?
 
 # ── Done ──────────────────────────────────────────────────────────
@@ -168,6 +184,7 @@ echo ""
 echo "The archiver CronJob runs daily at 2:00 AM and will:"
 echo "  1. Download all XNAT sessions via REST API and upload to gs://${GCS_BUCKET}/sessions/"
 echo "  2. Dump PostgreSQL to gs://${GCS_BUCKET}/db-backups/"
+echo "  3. Replace newly backed-up local archive files with verified symlinks into the GCS FUSE mount"
 echo ""
 echo "Manual trigger:"
 echo "  kubectl -n ais-xnat create job --from=cronjob/xnat-gcs-archiver xnat-manual-\$(date +%s)"

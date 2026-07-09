@@ -54,6 +54,10 @@ patches:
                     subPath: test/xnat
                   - mountPath: /data/xnat/build
                     name: xnat-build
+                  - mountPath: /data/xnat/object-store
+                    name: object-store
+                    readOnly: true
+                    mountPropagation: HostToContainer
                   - mountPath: /usr/local/share/xnat/plugins
                     name: xnat-nfs
                     readOnly: true
@@ -94,6 +98,10 @@ patches:
               - name: xnat-build
                 persistentVolumeClaim:
                   claimName: pv-xnat-build
+              - name: object-store
+                hostPath:
+                  path: /srv/xnat-local-storage/gpfs/object-store
+                  type: DirectoryOrCreate
               - name: init
                 configMap:
                   name: xnat-web-init
