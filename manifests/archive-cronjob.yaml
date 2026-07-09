@@ -1,5 +1,5 @@
 # XNAT GCS Archiver CronJob
-# Runs nightly at 2am: downloads sessions via XNAT REST API and uploads to GCS
+# Runs nightly at 2am: syncs local XNAT archive session files to GCS
 #
 # Manual trigger:
 #   kubectl -n ais-xnat create job --from=cronjob/xnat-gcs-archiver xnat-manual-$(date +%s)
@@ -53,9 +53,13 @@ spec:
                       key: password
                 - name: GOOGLE_APPLICATION_CREDENTIALS
                   value: /etc/gcs/key.json
+                - name: BACKUP_SOURCE_MODE
+                  value: "local"
                 - name: OFFLOAD_AFTER_BACKUP
                   value: "1"
                 - name: OFFLOAD_EXISTING_BACKUPS
+                  value: "0"
+                - name: REPAIR_INCOMPLETE_BACKUPS
                   value: "0"
                 - name: XNAT_ARCHIVE_ROOT
                   value: /data/xnat/archive

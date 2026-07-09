@@ -135,9 +135,9 @@ For OHIF sessions that show studies/series but no instances, check `xnat_imagesc
 
 ### GCS archiver failures
 
-The `xnat-gcs-archiver` CronJob intentionally skips sessions with zero files before attempting the XNAT ZIP download. Many historical session shells have no files and no `.backup_complete` marker; treating those as download failures causes the nightly job to fail even though there is nothing to back up.
+The `xnat-gcs-archiver` CronJob intentionally skips sessions with zero XNAT file records before backing up. Many historical session shells have no files and no `.backup_complete` marker; treating those as backup failures causes the nightly job to fail even though there is nothing to back up.
 
-The archiver backs up both scan-level files (`/scans/ALL/files`) and experiment-level resources (`/files`). Experiment-level resources are required for sessions such as `openrecon/test-upload`, where the session has a top-level `FILES` resource but no scan files. With `OFFLOAD_AFTER_BACKUP=1`, the CronJob only replaces local files with symlinks after the object-store file is visible through the FUSE mount and has the same byte size.
+The archiver queries both scan-level files (`/scans/ALL/files`) and experiment-level resources (`/files`) to decide whether a session has data, then backs up from the local archive directory by default (`BACKUP_SOURCE_MODE=local`) instead of downloading ZIPs through XNAT REST. `BACKUP_SOURCE_MODE=rest` is retained as a rollback path. Experiment-level resources are required for sessions such as `openrecon/test-upload`, where the session has a top-level `FILES` resource but no scan files. With `OFFLOAD_AFTER_BACKUP=1`, the CronJob only replaces local files with symlinks after the object-store file is visible through the FUSE mount and has the same byte size. Keep catalog/session XML and ingestion logs such as `dcmtoxnat.log` local. Bulk historical offload jobs should also set `OFFLOAD_EXISTING_BACKUPS=1` and `REPAIR_INCOMPLETE_BACKUPS=1`; if a stale `.backup_complete` marker exists but local files have no matching object, the job removes that marker, re-syncs the session, and retries the offload.
 
 ### Credentials for ais-edge `config/management.env`
 
