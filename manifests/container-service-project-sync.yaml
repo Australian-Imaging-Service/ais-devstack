@@ -7,6 +7,7 @@ metadata:
 data:
   sync-container-service-projects.py: |
     import base64
+    import http.cookiejar
     import json
     import os
     import sys
@@ -21,48 +22,62 @@ data:
         item.split(":", 1)
         for item in os.environ.get(
             "CONTAINER_SERVICE_WRAPPERS",
-            "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session",
+            "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session,dcm2niix:dcm2niix-scan,fmriprep-bids:fmriprep-session,aslprep-bids:aslprep-session,qsmxt-bids:qsmxt-session,musclemap-nifti:musclemap-scan,musclemap-nifti:musclemap-session,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-scan",
         ).split(",")
         if item.strip()
     ]
 
     auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
 
-    def request(method, path):
+    def request(method, path, use_basic_auth=False, parse_json=True):
+        headers = {}
+        if use_basic_auth:
+            headers["Authorization"] = f"Basic {auth}"
         req = urllib.request.Request(
             f"{xnat_url}{path}",
             method=method,
-            headers={"Authorization": f"Basic {auth}"},
+            headers=headers,
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as response:
+            with opener.open(req, timeout=60) as response:
                 body = response.read()
         except urllib.error.HTTPError as exc:
             sys.stderr.write(f"{method} {path} failed with HTTP {exc.code}: {exc.read().decode()}\n")
             raise
+        if not parse_json:
+            return body.decode()
         return json.loads(body.decode() or "null") if body else None
 
-    projects = [
-        row["ID"]
-        for row in request("GET", "/data/projects?format=json")["ResultSet"]["Result"]
-    ]
-    commands = request("GET", "/xapi/commands")
-    command_ids = {command["name"]: command["id"] for command in commands}
+    request("POST", "/data/JSESSION", use_basic_auth=True, parse_json=False)
+    try:
+        projects = [
+            row["ID"]
+            for row in request("GET", "/data/projects?format=json")["ResultSet"]["Result"]
+        ]
+        commands = request("GET", "/xapi/commands")
+        command_ids = {command["name"]: command["id"] for command in commands}
 
-    missing = [name for name, _ in wrappers if name not in command_ids]
-    if missing:
-        raise SystemExit(f"Missing Container Service commands: {', '.join(missing)}")
+        missing = [name for name, _ in wrappers if name not in command_ids]
+        if missing:
+            raise SystemExit(f"Missing Container Service commands: {', '.join(missing)}")
 
-    for command_name, wrapper_name in wrappers:
-        command_id = command_ids[command_name]
-        request("PUT", f"/xapi/commands/{command_id}/wrappers/{urllib.parse.quote(wrapper_name)}/enabled")
-        for project in projects:
-            path = (
-                f"/xapi/projects/{urllib.parse.quote(project)}/commands/{command_id}"
-                f"/wrappers/{urllib.parse.quote(wrapper_name)}/enabled"
-            )
-            request("PUT", path)
-            print(f"Enabled {command_name}/{wrapper_name} for project {project}")
+        for command_name, wrapper_name in wrappers:
+            command_id = command_ids[command_name]
+            request("PUT", f"/xapi/commands/{command_id}/wrappers/{urllib.parse.quote(wrapper_name)}/enabled")
+            for project in projects:
+                path = (
+                    f"/xapi/projects/{urllib.parse.quote(project)}/commands/{command_id}"
+                    f"/wrappers/{urllib.parse.quote(wrapper_name)}/enabled"
+                )
+                request("PUT", path)
+                print(f"Enabled {command_name}/{wrapper_name} for project {project}")
+    finally:
+        try:
+            request("DELETE", "/data/JSESSION", parse_json=False)
+        except Exception as exc:
+            sys.stderr.write(f"Could not close XNAT session cleanly: {exc}\n")
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -91,7 +106,7 @@ spec:
                 - name: XNAT_URL
                   value: "http://xnat-web.ais-xnat.svc.cluster.local"
                 - name: CONTAINER_SERVICE_WRAPPERS
-                  value: "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session"
+                  value: "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session,dcm2niix:dcm2niix-scan,fmriprep-bids:fmriprep-session,aslprep-bids:aslprep-session,qsmxt-bids:qsmxt-session,musclemap-nifti:musclemap-scan,musclemap-nifti:musclemap-session,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-scan"
                 - name: XNAT_USER
                   valueFrom:
                     secretKeyRef:

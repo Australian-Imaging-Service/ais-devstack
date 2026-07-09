@@ -1,0 +1,109 @@
+{
+  "name": "dcm2niix",
+  "label": "dcm2niix",
+  "description": "Runs dcm2niix on a scan-level DICOM resource and stores NIfTI outputs on the scan.",
+  "version": "1.6-ais.1",
+  "schema-version": "1.0",
+  "type": "docker",
+  "image": "xnat/dcm2niix:1.6",
+  "index": "https://index.docker.io/v1/",
+  "info-url": "https://github.com/rordenlab/dcm2niix",
+  "command-line": "bash -lc 'set -euo pipefail; dcm2niix -b \"$DCM2NIIX_BIDS\" -z \"$DCM2NIIX_COMPRESS\" -f \"$DCM2NIIX_FILENAME_FORMAT\" -o /output /input'",
+  "override-entrypoint": true,
+  "environment-variables": {
+    "DCM2NIIX_BIDS": "#BIDS#",
+    "DCM2NIIX_COMPRESS": "#COMPRESS#",
+    "DCM2NIIX_FILENAME_FORMAT": "#FILENAME_FORMAT#"
+  },
+  "mounts": [
+    {
+      "name": "dicom-in",
+      "writable": false,
+      "path": "/input"
+    },
+    {
+      "name": "nifti-out",
+      "writable": true,
+      "path": "/output"
+    }
+  ],
+  "inputs": [
+    {
+      "name": "bids",
+      "label": "BIDS sidecars",
+      "description": "Create BIDS JSON sidecar files.",
+      "type": "boolean",
+      "required": true,
+      "default-value": true,
+      "true-value": "y",
+      "false-value": "n",
+      "replacement-key": "#BIDS#"
+    },
+    {
+      "name": "compress",
+      "label": "Compress NIfTI",
+      "description": "Write compressed .nii.gz outputs.",
+      "type": "boolean",
+      "required": true,
+      "default-value": true,
+      "true-value": "y",
+      "false-value": "n",
+      "replacement-key": "#COMPRESS#"
+    },
+    {
+      "name": "filename-format",
+      "label": "Filename format",
+      "description": "dcm2niix filename format string.",
+      "type": "string",
+      "required": true,
+      "default-value": "%p_%s",
+      "replacement-key": "#FILENAME_FORMAT#"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "nifti",
+      "description": "NIfTI outputs and optional BIDS JSON sidecars.",
+      "mount": "nifti-out",
+      "required": true
+    }
+  ],
+  "xnat": [
+    {
+      "name": "dcm2niix-scan",
+      "label": "dcm2niix",
+      "description": "Convert this scan's DICOM resource to NIfTI with dcm2niix",
+      "contexts": [
+        "xnat:imageScanData"
+      ],
+      "external-inputs": [
+        {
+          "name": "scan",
+          "description": "Input scan with a DICOM resource.",
+          "type": "Scan",
+          "required": true,
+          "matcher": "'DICOM' in @.resources[*].label"
+        }
+      ],
+      "derived-inputs": [
+        {
+          "name": "scan-dicoms",
+          "description": "The scan-level DICOM resource.",
+          "type": "Resource",
+          "derived-from-wrapper-input": "scan",
+          "provides-files-for-command-mount": "dicom-in",
+          "matcher": "@.label == 'DICOM'"
+        }
+      ],
+      "output-handlers": [
+        {
+          "name": "nifti-resource",
+          "accepts-command-output": "nifti",
+          "as-a-child-of": "scan",
+          "type": "Resource",
+          "label": "NIFTI"
+        }
+      ]
+    }
+  ]
+}
