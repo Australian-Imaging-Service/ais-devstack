@@ -1,0 +1,147 @@
+# XNAT project owner sync
+# Keeps configured users in the Owners group for every current and future project.
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/project-owner-sync project-owner-sync-manual-$(date +%s)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: project-owner-sync
+  namespace: ais-xnat
+data:
+  sync-project-owners.py: |
+    import base64
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    xnat_url = os.environ.get("XNAT_URL", "http://xnat-web.ais-xnat.svc.cluster.local").rstrip("/")
+    username = os.environ["XNAT_USER"]
+    password = os.environ["XNAT_PASS"]
+    owner_users = [
+        item.strip()
+        for item in os.environ.get("XNAT_OWNER_USERS", "brosnan").split(",")
+        if item.strip()
+    ]
+
+    if not owner_users:
+        raise SystemExit("XNAT_OWNER_USERS must include at least one username")
+
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+
+    def quote(value):
+        return urllib.parse.quote(value, safe="")
+
+    def request(method, path, expect_json=False):
+        req = urllib.request.Request(
+            f"{xnat_url}{path}",
+            method=method,
+            headers={"Authorization": f"Basic {auth}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            sys.stderr.write(f"{method} {path} failed with HTTP {exc.code}: {body}\n")
+            raise
+
+        if expect_json:
+            return json.loads(body.decode() or "null")
+        return body
+
+    def assert_owner_user_exists(owner_user):
+        user = request("GET", f"/xapi/users/{quote(owner_user)}", expect_json=True)
+        if user.get("enabled") is False:
+            raise SystemExit(f"User {owner_user} exists but is disabled")
+        if user.get("verified") is False:
+            raise SystemExit(f"User {owner_user} exists but is not verified")
+
+    def project_ids():
+        result = request("GET", "/data/projects?format=json", expect_json=True)
+        return sorted(row["ID"] for row in result["ResultSet"]["Result"])
+
+    def project_has_owner(project, owner_user):
+        result = request("GET", f"/data/projects/{quote(project)}/users?format=json", expect_json=True)
+        for row in result["ResultSet"]["Result"]:
+            login = (row.get("login") or row.get("username") or "").lower()
+            display_name = (row.get("displayname") or "").lower()
+            group_id = (row.get("GROUP_ID") or row.get("group_id") or "").lower()
+            if login == owner_user.lower() and (
+                display_name == "owners" or group_id == f"{project.lower()}_owner"
+            ):
+                return True
+        return False
+
+    for owner_user in owner_users:
+        assert_owner_user_exists(owner_user)
+
+    projects = project_ids()
+    if not projects:
+        print("No XNAT projects found")
+        raise SystemExit(0)
+
+    missing = []
+    for project in projects:
+        for owner_user in owner_users:
+            request("PUT", f"/data/projects/{quote(project)}/users/Owners/{quote(owner_user)}")
+            if project_has_owner(project, owner_user):
+                print(f"Ensured {owner_user} is Owner of project {project}")
+            else:
+                missing.append((project, owner_user))
+
+    if missing:
+        for project, owner_user in missing:
+            sys.stderr.write(f"Missing verified owner row: project={project} owner={owner_user}\n")
+        raise SystemExit(1)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: project-owner-sync
+  namespace: ais-xnat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/project-owner-sync/sync-project-owners.py
+              env:
+                - name: XNAT_URL
+                  value: "http://xnat-web.ais-xnat.svc.cluster.local"
+                - name: XNAT_OWNER_USERS
+                  value: "brosnan"
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: password
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/project-owner-sync
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: project-owner-sync
