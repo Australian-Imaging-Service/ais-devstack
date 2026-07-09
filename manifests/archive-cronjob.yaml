@@ -53,10 +53,25 @@ spec:
                       key: password
                 - name: GOOGLE_APPLICATION_CREDENTIALS
                   value: /etc/gcs/key.json
+                - name: OFFLOAD_AFTER_BACKUP
+                  value: "1"
+                - name: OFFLOAD_EXISTING_BACKUPS
+                  value: "0"
+                - name: XNAT_ARCHIVE_ROOT
+                  value: /data/xnat/archive
+                - name: OBJECT_STORE_MOUNT
+                  value: /data/xnat/object-store
               volumeMounts:
                 - name: gcs-key
                   mountPath: /etc/gcs
                   readOnly: true
+                - name: xnat-gpfs
+                  mountPath: /data/xnat
+                  mountPropagation: HostToContainer
+                - name: object-store
+                  mountPath: /data/xnat/object-store
+                  readOnly: true
+                  mountPropagation: HostToContainer
           volumes:
             - name: gcs-key
               secret:
@@ -64,3 +79,10 @@ spec:
                 items:
                   - key: som-lucascenterxnat-607d15cfdace.json
                     path: key.json
+            - name: xnat-gpfs
+              persistentVolumeClaim:
+                claimName: pv-xnat-gpfs
+            - name: object-store
+              hostPath:
+                path: /srv/xnat-local-storage/gpfs/object-store
+                type: DirectoryOrCreate

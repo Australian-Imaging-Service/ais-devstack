@@ -404,10 +404,19 @@ hub:
 
           xnat_volumes = [
               {'name': 'xnat-gpfs', 'persistentVolumeClaim': {'claimName': 'xnat-gpfs'}},
+              {'name': 'xnat-object-store', 'hostPath': {'path': '/srv/xnat-local-storage/gpfs/object-store', 'type': 'Directory'}},
               {'name': 'shm', 'emptyDir': {'medium': 'Memory', 'sizeLimit': '2Gi'}}
           ]
 
-          xnat_mounts = [{'name': 'shm', 'mountPath': '/dev/shm'}]
+          xnat_mounts = [
+              {'name': 'shm', 'mountPath': '/dev/shm'},
+              {
+                  'name': 'xnat-object-store',
+                  'mountPath': '/data/xnat/object-store',
+                  'readOnly': True,
+                  'mountPropagation': 'HostToContainer'
+              }
+          ]
 
           spawner.volumes = existing_volumes + xnat_volumes
           spawner.volume_mounts = existing_mounts + xnat_mounts

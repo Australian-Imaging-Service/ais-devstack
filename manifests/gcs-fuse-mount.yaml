@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: xnat-gcs-fuse
+  namespace: ais-xnat
+spec:
+  selector:
+    matchLabels:
+      app: xnat-gcs-fuse
+  template:
+    metadata:
+      labels:
+        app: xnat-gcs-fuse
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: xnat-host
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: gcsfuse
+          image: xnat-gcsfuse:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+          env:
+            - name: GCS_BUCKET
+              value: "xnat-lucas-archive"
+            - name: MOUNT_POINT
+              value: /mnt/object-store
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /etc/gcs/key.json
+          volumeMounts:
+            - name: object-store
+              mountPath: /mnt/object-store
+              mountPropagation: Bidirectional
+            - name: gcs-key
+              mountPath: /etc/gcs
+              readOnly: true
+            - name: dev-fuse
+              mountPath: /dev/fuse
+      volumes:
+        - name: object-store
+          hostPath:
+            path: /srv/xnat-local-storage/gpfs/object-store
+            type: DirectoryOrCreate
+        - name: gcs-key
+          secret:
+            secretName: gcs-sa-key
+            items:
+              - key: som-lucascenterxnat-607d15cfdace.json
+                path: key.json
+        - name: dev-fuse
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice
