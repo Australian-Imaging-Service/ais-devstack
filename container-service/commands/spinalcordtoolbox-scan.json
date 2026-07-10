@@ -101,6 +101,43 @@
           "label": "SCT"
         }
       ]
+    },
+    {
+      "name": "spinalcordtoolbox-deepseg-dicom-scan",
+      "label": "Spinal Cord Toolbox (DICOM)",
+      "description": "Convert this scan's DICOM resource to NIfTI with dcm2niix, then run Neurodesk Spinal Cord Toolbox sct_deepseg on it",
+      "contexts": [
+        "xnat:imageScanData"
+      ],
+      "external-inputs": [
+        {
+          "name": "scan",
+          "description": "Input scan with a DICOM resource.",
+          "type": "Scan",
+          "required": true,
+          "matcher": "'DICOM' in @.resources[*].label"
+        }
+      ],
+      "derived-inputs": [
+        {
+          "name": "scan-dicoms",
+          "description": "The scan-level DICOM resource, converted to NIfTI by the dcm2niix setup command before it is mounted.",
+          "type": "Resource",
+          "derived-from-wrapper-input": "scan",
+          "provides-files-for-command-mount": "nifti-in",
+          "via-setup-command": "xnat/dcm2niix:1.6:dcm2niix-setup",
+          "matcher": "@.label == 'DICOM'"
+        }
+      ],
+      "output-handlers": [
+        {
+          "name": "sct-dicom-resource",
+          "accepts-command-output": "sct-output",
+          "as-a-child-of": "scan",
+          "type": "Resource",
+          "label": "SCT"
+        }
+      ]
     }
   ]
 }

@@ -119,8 +119,10 @@ backup_session_from_local() {
         return 1
     fi
 
+    # -e ignores symlinks: offloaded files already live in the bucket, and
+    # following their symlinks would re-read them through the FUSE mount.
     log "Syncing local archive ${project}/${label} from ${session_dir} -> ${gcs_path}"
-    if gsutil -m -q rsync -r "$session_dir" "${gcs_path}/" 2>&1; then
+    if gsutil -m -q rsync -r -e "$session_dir" "${gcs_path}/" 2>&1; then
         return 0
     fi
 
@@ -174,6 +176,14 @@ backup_session_from_rest() {
 
     log "WARN: Failed to upload REST export ${project}/${label} to GCS"
     return 1
+}
+
+# Newest mtime (epoch seconds) among regular files in a session directory.
+# Symlinks (already-offloaded files) are excluded.
+newest_local_mtime() {
+    local session_dir="$1"
+    [ -d "$session_dir" ] || return 0
+    find "$session_dir" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1
 }
 
 matching_object_file() {
@@ -344,21 +354,35 @@ while IFS=$'\t' read -r project label session_id; do
         fi
     fi
 
-    # Check if already backed up by looking for a marker file in GCS
-    if gsutil -q stat "${GCS_PATH}/.backup_complete" 2>/dev/null; then
-        log "SKIP: ${project}/${label} already backed up"
-        if truthy "$OFFLOAD_EXISTING_BACKUPS"; then
-            if offload_session "$project" "$label"; then
-                continue
-            elif truthy "$REPAIR_INCOMPLETE_BACKUPS"; then
-                log "WARN: Refreshing incomplete backup for ${project}/${label}"
-                gsutil -q rm "${GCS_PATH}/.backup_complete" 2>/dev/null || true
+    # Check if already backed up by looking for a marker file in GCS.
+    # The marker alone is not trusted: sessions can gain files after their
+    # first backup (e.g. appended OpenRecon/derived series), so local files
+    # newer than the marker force an incremental re-sync.
+    MARKER_STAT=$(gsutil stat "${GCS_PATH}/.backup_complete" 2>/dev/null || true)
+    if [ -n "$MARKER_STAT" ]; then
+        MARKER_EPOCH=$(printf '%s\n' "$MARKER_STAT" \
+            | sed -n 's/^ *Creation time: *//p' | head -1)
+        MARKER_EPOCH=$(date -u -d "$MARKER_EPOCH" +%s 2>/dev/null || echo 0)
+        NEWEST_LOCAL=$(newest_local_mtime "$(local_session_dir "$project" "$label")")
+        if [ "$MARKER_EPOCH" -gt 0 ] && [ -n "$NEWEST_LOCAL" ] \
+            && [ "$NEWEST_LOCAL" -gt "$MARKER_EPOCH" ]; then
+            log "STALE: ${project}/${label} has local files newer than its backup marker; re-syncing"
+            gsutil -q rm "${GCS_PATH}/.backup_complete" 2>/dev/null || true
+        else
+            log "SKIP: ${project}/${label} already backed up"
+            if truthy "$OFFLOAD_EXISTING_BACKUPS"; then
+                if offload_session "$project" "$label"; then
+                    continue
+                elif truthy "$REPAIR_INCOMPLETE_BACKUPS"; then
+                    log "WARN: Refreshing incomplete backup for ${project}/${label}"
+                    gsutil -q rm "${GCS_PATH}/.backup_complete" 2>/dev/null || true
+                else
+                    FAILED=$((FAILED + 1))
+                    continue
+                fi
             else
-                FAILED=$((FAILED + 1))
                 continue
             fi
-        else
-            continue
         fi
     fi
 
