@@ -1,14 +1,14 @@
 {
   "name": "qsmxt-bids",
   "label": "QSMxT",
-  "description": "Runs Neurodesk QSMxT on an XNAT MR session after converting scan-level NIFTI and BIDS sidecar resources to a BIDS layout.",
-  "version": "8.3.2-ais.1",
+  "description": "Runs Neurodesk QSMxT on an XNAT MR session. The session's DICOM scans are mounted directly and QSMxT converts them to BIDS internally (dicom-sort + dicom-convert) before running the QSM pipeline, so no pre-existing NIFTI or BIDS scan resources are required.",
+  "version": "8.3.2-ais.2",
   "schema-version": "1.0",
   "type": "docker",
   "image": "vnmd/qsmxt_8.3.2:20260421",
   "index": "https://index.docker.io/v1/",
   "info-url": "https://qsmxt.github.io/QSMxT/",
-  "command-line": "bash -lc 'set -euo pipefail; case \"$QSMXT_PREMADE\" in default|gre|epi|bet|fast|body|nextqsm) ;; *) echo \"Invalid QSMxT premade pipeline: $QSMXT_PREMADE\" >&2; exit 2;; esac; args=(/work/bids --premade \"$QSMXT_PREMADE\" --do_qsm --auto_yes); case \"$QSMXT_DO_SEGMENTATION\" in true) args+=(--do_segmentation);; false) ;; *) echo \"Invalid QSMxT segmentation flag: $QSMXT_DO_SEGMENTATION\" >&2; exit 2;; esac; case \"$QSMXT_DO_ANALYSIS\" in true) args+=(--do_analysis);; false) ;; *) echo \"Invalid QSMxT analysis flag: $QSMXT_DO_ANALYSIS\" >&2; exit 2;; esac; mkdir -p /work/home /work/matplotlib /work/bids /output; cp -a /input/. /work/bids/; qsmxt \"${args[@]}\"; if [ ! -d /work/bids/derivatives ]; then echo \"QSMxT produced no derivatives directory\" >&2; exit 3; fi; cp -a /work/bids/derivatives/. /output/'",
+  "command-line": "bash -lc 'set -euo pipefail; case \"$QSMXT_PREMADE\" in default|gre|epi|bet|fast|body|nextqsm) ;; *) echo \"Invalid QSMxT premade pipeline: $QSMXT_PREMADE\" >&2; exit 2;; esac; mkdir -p /work/home /work/matplotlib /work/sorted /work/bids /output; echo \"Sorting DICOMs...\"; python -c \"from qsmxt.cli.dicom_sort import main; main()\" /input /work/sorted; echo \"Converting DICOMs to BIDS...\"; dicom-convert /work/sorted /work/bids --auto_yes; args=(/work/bids --premade \"$QSMXT_PREMADE\" --do_qsm --auto_yes); case \"$QSMXT_DO_SEGMENTATION\" in true) args+=(--do_segmentation);; false) ;; *) echo \"Invalid QSMxT segmentation flag: $QSMXT_DO_SEGMENTATION\" >&2; exit 2;; esac; case \"$QSMXT_DO_ANALYSIS\" in true) args+=(--do_analysis);; false) ;; *) echo \"Invalid QSMxT analysis flag: $QSMXT_DO_ANALYSIS\" >&2; exit 2;; esac; echo \"Running QSMxT...\"; qsmxt \"${args[@]}\"; if [ ! -d /work/bids/derivatives ]; then echo \"QSMxT produced no derivatives directory (no QSM-compatible series found?)\" >&2; exit 3; fi; cp -a /work/bids/derivatives/. /output/'",
   "working-directory": "/work",
   "override-entrypoint": true,
   "reserve-memory": "8192",
@@ -23,7 +23,7 @@
   },
   "mounts": [
     {
-      "name": "bids-in",
+      "name": "session-in",
       "writable": false,
       "path": "/input"
     },
@@ -90,11 +90,10 @@
       "external-inputs": [
         {
           "name": "session",
-          "description": "Input MR session. The session must contain BIDS-compatible QSM scan resources, typically part-mag and part-phase T2starw NIFTI files with BIDS JSON sidecars.",
+          "description": "Input MR session. Its DICOM scans are converted to BIDS inside the QSMxT container, so no pre-existing NIFTI/BIDS scan resources are needed. The session should contain multi-echo GRE (part-mag/part-phase) QSM series.",
           "type": "Session",
           "required": true,
-          "provides-files-for-command-mount": "bids-in",
-          "via-setup-command": "xnat/xnat2bids-setup:1.4:xnat2bids",
+          "provides-files-for-command-mount": "session-in",
           "load-children": false
         }
       ],
