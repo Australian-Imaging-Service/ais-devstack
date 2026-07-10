@@ -12,6 +12,7 @@ XNAT deployment on k3s with node-local storage for the Australian Imaging Servic
 ### Deployment Notes
 
 - `kubectl` requires `sudo` on this machine (k3s kubeconfig at `/etc/rancher/k3s/k3s.yaml` is root-only)
+- The XNAT application timezone is `America/Los_Angeles` (`timezone:` in `manifests/values.yaml`; the host/node stays on UTC). It was `Australia/Brisbane` until 2026-07-10, and XNAT stores local wall-clock times without offsets, so workflow/container timestamps from before then render 17 hours ahead of their true Pacific time. Account for this when auditing or purging old workflow rows by `launch_time`.
 - XNAT runs as a StatefulSet (`xnat-web-0`), rollouts take a few minutes for the pod to terminate and restart
 - Always use `--post-renderer ./manifests/kustomize.sh` with helm commands — it applies XNAT storage volume mount patches
 - After helm upgrade, verify with: `sudo kubectl -n ais-xnat rollout status statefulset/xnat-web`
