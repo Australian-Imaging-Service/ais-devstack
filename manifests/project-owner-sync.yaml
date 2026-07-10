@@ -14,6 +14,7 @@ data:
     import base64
     import json
     import os
+    import re
     import sys
     import urllib.error
     import urllib.parse
@@ -93,6 +94,49 @@ data:
                 print(f"Ensured {owner_user} is Owner of project {project}")
             else:
                 missing.append((project, owner_user))
+
+    # ── Group-derived owners ────────────────────────────────────────────
+    # ais-edge routes DICOMs with PatientID <subject>@<group>/<project>.
+    # The group name survives in each session's dcmPatientId. When it matches
+    # an enabled XNAT user (e.g. polimeni), that user becomes an Owner of
+    # every project that holds sessions belonging to the group.
+    GROUP_PID_RE = re.compile(r"^[^@/]+@([A-Za-z][A-Za-z0-9_-]{1,63})/[A-Za-z0-9_-]+$")
+
+    def group_owner_pairs():
+        result = request(
+            "GET",
+            "/data/experiments?format=json&xsiType=xnat:imageSessionData"
+            "&columns=project,dcmPatientId",
+            expect_json=True,
+        )
+        pairs = set()
+        for row in result["ResultSet"]["Result"]:
+            match = GROUP_PID_RE.match(row.get("dcmPatientId") or "")
+            if match and row.get("project"):
+                pairs.add((row["project"], match.group(1)))
+        return sorted(pairs)
+
+    # /xapi/users/<name> returns HTTP 500 for unknown users, so check
+    # membership against the full user list instead.
+    all_users = set(request("GET", "/xapi/users", expect_json=True) or [])
+
+    def enabled_user(name):
+        if name not in all_users:
+            return False
+        return request("GET", f"/xapi/users/{quote(name)}/enabled", expect_json=True) is True
+
+    usable_group_users = {}
+    for project, group in group_owner_pairs():
+        if group not in usable_group_users:
+            usable_group_users[group] = enabled_user(group)
+        if not usable_group_users[group]:
+            print(f"Group {group} has no enabled XNAT user; skipping ownership of {project}")
+            continue
+        request("PUT", f"/data/projects/{quote(project)}/users/Owners/{quote(group)}")
+        if project_has_owner(project, group):
+            print(f"Ensured group user {group} is Owner of project {project}")
+        else:
+            missing.append((project, group))
 
     if missing:
         for project, owner_user in missing:

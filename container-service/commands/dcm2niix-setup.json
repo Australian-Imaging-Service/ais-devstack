@@ -1,0 +1,10 @@
+{
+  "name": "dcm2niix-setup",
+  "label": "dcm2niix setup",
+  "description": "Setup command that converts the DICOM files staged into /input to NIfTI in /output, so NIFTI-consuming wrappers can run directly on a DICOM-only scan.",
+  "version": "1.6",
+  "schema-version": "1.0",
+  "type": "docker-setup",
+  "image": "xnat/dcm2niix:1.6",
+  "command-line": "bash -lc 'set -euo pipefail; dcm2niix -b y -z y -f %p_%s -o /output /input; if ! find /output -type f \\( -iname \"*.nii\" -o -iname \"*.nii.gz\" \\) | grep -q .; then echo \"dcm2niix produced no NIfTI output from the DICOM input\" >&2; exit 2; fi'"
+}

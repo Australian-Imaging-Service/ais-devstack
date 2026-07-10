@@ -1,0 +1,149 @@
+# Ingest bucket uploaded/ retention
+# The xnat-ingest-upload wrapper archives verified staged sessions to
+# uploaded/<stamp>/<session>/ in the SeaweedFS ingest bucket. Those copies are
+# redundant once the nightly GCS archiver has backed the session up (the data
+# then lives in the XNAT archive and gs://xnat-lucas-archive). This CronJob
+# deletes uploaded copies older than RETENTION_DAYS whose session has a GCS
+# .backup_complete marker, checked through the local object-store FUSE mount.
+# Copies without a marker are kept and reported. Stale .uploads multipart
+# debris older than the retention window is removed too.
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/ingest-uploaded-retention ingest-retention-manual-$(date +%s)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingest-uploaded-retention
+  namespace: ais-xnat
+data:
+  retention.py: |
+    import json
+    import os
+    import sys
+    import urllib.parse
+    import urllib.request
+    from datetime import datetime, timedelta, timezone
+
+    FILER = os.environ.get("FILER_URL", "http://seaweedfs.seaweedfs.svc.cluster.local:8888").rstrip("/")
+    BUCKET_PATH = os.environ.get("BUCKET_PATH", "/buckets/ingest-bucket")
+    OBJECT_STORE = os.environ.get("OBJECT_STORE_SESSIONS", "/object-store/sessions")
+    RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
+    DRY_RUN = os.environ.get("DRY_RUN", "0").lower() in {"1", "true", "yes"}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+
+    def filer_ls(path, limit=1000):
+        req = urllib.request.Request(
+            f"{FILER}{urllib.parse.quote(path)}?limit={limit}",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r).get("Entries") or []
+
+    def filer_delete(path):
+        if DRY_RUN:
+            print(f"DRY-RUN would delete {path}")
+            return
+        req = urllib.request.Request(
+            f"{FILER}{urllib.parse.quote(path)}?recursive=true", method="DELETE"
+        )
+        with urllib.request.urlopen(req, timeout=300) as r:
+            r.read()
+        print(f"deleted {path}")
+
+    def subtree_has_files(path, depth=0):
+        if depth > 8:
+            return True
+        for e in filer_ls(path):
+            if not (e.get("Mode", 0) & 0x80000000):
+                return True
+            if subtree_has_files(e["FullPath"], depth + 1):
+                return True
+        return False
+
+    def session_marker(name):
+        parts = name.split(".", 2)
+        if len(parts) < 3:
+            return None
+        project, subject, visit = parts
+        label = "_".join((subject, visit.replace(".", "_")))
+        return f"{OBJECT_STORE}/{project}/{label}/.backup_complete"
+
+    deleted = kept = 0
+    for stamp_entry in filer_ls(f"{BUCKET_PATH}/uploaded/"):
+        stamp = stamp_entry["FullPath"].rsplit("/", 1)[-1]
+        try:
+            stamp_time = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            print(f"keep (unparsable stamp) {stamp_entry['FullPath']}")
+            kept += 1
+            continue
+        if stamp_time >= cutoff:
+            continue
+        for e in filer_ls(stamp_entry["FullPath"]):
+            name = e["FullPath"].rsplit("/", 1)[-1]
+            marker = session_marker(name)
+            if marker and os.path.exists(marker):
+                filer_delete(e["FullPath"])
+                deleted += 1
+            else:
+                print(f"keep (no GCS backup marker) {e['FullPath']}")
+                kept += 1
+        if not subtree_has_files(stamp_entry["FullPath"]):
+            filer_delete(stamp_entry["FullPath"])
+
+    for e in filer_ls(f"{BUCKET_PATH}/.uploads/"):
+        mtime = datetime.fromisoformat(e["Mtime"].replace("Z", "+00:00"))
+        if mtime < cutoff:
+            filer_delete(e["FullPath"])
+            deleted += 1
+
+    print(f"retention complete: deleted={deleted} kept={kept} cutoff={cutoff.isoformat()}")
+    if kept:
+        sys.stderr.write(
+            f"{kept} uploaded copies past retention lack a GCS backup marker; "
+            "investigate before removing manually\n"
+        )
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ingest-uploaded-retention
+  namespace: ais-xnat
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: retention
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/retention/retention.py
+              env:
+                - name: RETENTION_DAYS
+                  value: "7"
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/retention
+                  readOnly: true
+                - name: object-store
+                  mountPath: /object-store
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: ingest-uploaded-retention
+            - name: object-store
+              hostPath:
+                path: /srv/xnat-local-storage/gpfs/object-store
+                type: Directory

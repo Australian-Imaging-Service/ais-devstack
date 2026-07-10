@@ -104,3 +104,29 @@ manifests/configmap.yaml).
 +
   }));
 \ No newline at end of file
+
+
+=== Binary patch: org/nrg/containers/api/DockerControlApi.class ===
+The Docker client (OkHttp) is built with hardcoded timeouts:
+  connectTimeout = 3000 ms   (sipush 3000 = 11 0B B8)
+  readTimeout    = 4500 ms   (sipush 4500 = 11 11 94)
+A 4.5 s read timeout on POST /containers/create makes large Neurodesk images
+(spinalcordtoolbox, musclemap, fmriprep, qsmxt) fail with
+`SocketTimeoutException` -> workflow status `Failed (Staging)` when the create
+call races a fresh image pull/extract on a busy host. We raise readTimeout to
+32000 ms by editing the single sipush operand in place (same 3-byte length, so
+no bytecode offsets shift):
+  offset of `11 11 94` in the class file -> replace with `11 7D 00` (sipush 32000)
+32767 ms is the ceiling of this in-place method (sipush is a signed 16-bit
+operand); a larger value would require an ldc against the constant pool, i.e. a
+source rebuild. To re-apply after a jar rebuild:
+  python3 - <<'EOF'
+  import zipfile
+  jar='plugins/container-service-3.7.2-uq-fat.jar'
+  name='org/nrg/containers/api/DockerControlApi.class'
+  z=zipfile.ZipFile(jar); data=bytearray(z.read(name))
+  assert data.count(b'\x11\x11\x94')==1
+  data[data.index(b'\x11\x11\x94'):][:3]=b'\x11\x7d\x00'
+  # rewrite jar with this member replaced (see build steps in AGENTS.md)
+  EOF
+Verify with: javap -c -p org.nrg.containers.api.DockerControlApi | grep -A1 readTimeout  # -> sipush 32000

@@ -444,3 +444,22 @@ data:
     }
 
     patch_ohif_metadata_scan
+
+    # xnatpy-based clients (xnat-ingest uploader) request columns=ID,URI on
+    # every listing; XNAT serves the request but logs an ERROR for the
+    # unsupported URI alias each time. Silence only that class.
+    patch_logback_query_organizer() {
+      local lb=/TOMCAT/webapps/ROOT/WEB-INF/classes/logback.xml
+      if [ ! -f "${lb}" ]; then
+        echo "logback QueryOrganizerResource patch skipped: ${lb} not found"
+        return 0
+      fi
+      if grep -q 'QueryOrganizerResource' "${lb}"; then
+        echo "logback QueryOrganizerResource patch already applied"
+        return 0
+      fi
+      sed -i 's|</configuration>|    <logger name="org.nrg.xnat.restlet.resources.QueryOrganizerResource" level="OFF"/>\n</configuration>|' "${lb}"
+      echo "logback QueryOrganizerResource patch applied"
+    }
+
+    patch_logback_query_organizer

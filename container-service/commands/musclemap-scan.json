@@ -123,29 +123,37 @@
       ]
     },
     {
-      "name": "musclemap-session",
-      "label": "MuscleMap",
-      "description": "Run Neurodesk MuscleMap on this MR session",
+      "name": "musclemap-dicom-scan",
+      "label": "MuscleMap (DICOM)",
+      "description": "Convert this scan's DICOM resource to NIfTI with dcm2niix, then run Neurodesk MuscleMap on it",
       "contexts": [
-        "xnat:mrSessionData"
+        "xnat:imageScanData"
       ],
       "external-inputs": [
         {
-          "name": "session",
-          "description": "Input MR session. The session must contain scan-level NIFTI resources and BIDS JSON sidecar resources.",
-          "type": "Session",
+          "name": "scan",
+          "description": "Input scan with a DICOM resource.",
+          "type": "Scan",
           "required": true,
-          "provides-files-for-command-mount": "nifti-in",
-          "via-setup-command": "xnat/xnat2bids-setup:1.4:xnat2bids",
-          "load-children": false
+          "matcher": "'DICOM' in @.resources[*].label"
         }
       ],
-      "derived-inputs": [],
+      "derived-inputs": [
+        {
+          "name": "scan-dicoms",
+          "description": "The scan-level DICOM resource, converted to NIfTI by the dcm2niix setup command before it is mounted.",
+          "type": "Resource",
+          "derived-from-wrapper-input": "scan",
+          "provides-files-for-command-mount": "nifti-in",
+          "via-setup-command": "xnat/dcm2niix:1.6:dcm2niix-setup",
+          "matcher": "@.label == 'DICOM'"
+        }
+      ],
       "output-handlers": [
         {
-          "name": "musclemap-session-resource",
+          "name": "musclemap-dicom-resource",
           "accepts-command-output": "musclemap-output",
-          "as-a-child-of": "session",
+          "as-a-child-of": "scan",
           "type": "Resource",
           "label": "MUSCLEMAP"
         }
