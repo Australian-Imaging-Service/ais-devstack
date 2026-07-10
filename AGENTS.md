@@ -256,6 +256,19 @@ sudo kubectl -n ais-xnat create secret generic edge-uploader-creds \
   --from-literal=email=mail.neurodesk@gmail.com
 ```
 
+## Platform monitoring & alerts
+
+`manifests/platform-monitor.yaml` runs the `platform-monitor` CronJob (ais-xnat namespace, every 15 minutes) which emails `mail.neurodesk@gmail.com` via Gmail SMTP. It checks: node disk usage (warn 80% / crit 90%), unhealthy pods and container restarts in the core namespaces, failed k8s Jobs and stale CronJobs (no success within ~1.5× their schedule period), XNAT reachability (in-cluster service and public URL), public TLS certificate expiry (<14 days), Container Service Docker ping, newly failed XNAT workflows (`wrk_workflowdata`, dismissed excluded), pending project access requests (`xs_par_table` rows with `approved IS NULL` — these re-alert daily until approved/denied in the project's Access tab), and ingest `staged/`/`incoming/` prefixes older than 24h (stuck uploader).
+
+Behavior: one email per run batching NEW problems and one-time EVENTS; persistent problems re-alert every 24h and produce a RECOVERED notice when they clear; a daily digest at 8am `America/Los_Angeles` summarizes disk/pods/cronjobs/workflows/access-requests/ingest and acts as a dead-man's switch (no digest = the monitor itself is broken; check `sudo kubectl -n ais-xnat get jobs | grep platform-monitor`). A failing check reports itself as a `check-error:<name>` issue rather than failing silently.
+
+Operational notes:
+- The script is baked into the local `xnat-platform-monitor:latest` image (`monitoring/platform-monitor.py` + `monitoring/Dockerfile`). After editing it: `sudo docker build -t xnat-platform-monitor:latest monitoring/ && sudo docker save xnat-platform-monitor:latest | sudo k3s ctr images import -` (or re-run `scripts/install-platform-monitor.sh`).
+- SMTP credentials (Gmail app password) live only in the `platform-monitor-smtp` secret (keys `username`, `password`, `to`) — never in the repo. Rotate with `SMTP_PASSWORD=... ./scripts/install-platform-monitor.sh`.
+- Alert dedup state is at `/srv/xnat-local-storage/monitoring/state.json` on the host; delete it to re-alert on everything currently broken.
+- Manual run: `sudo kubectl -n ais-xnat create job --from=cronjob/platform-monitor platform-monitor-manual-$(date +%s)`. To test the digest, create a one-off job from the cronjob spec with env `FORCE_DIGEST=1`.
+- Thresholds/targets are env vars on the CronJob container (`DISK_WARN_PCT`, `CERT_WARN_DAYS`, `STAGED_MAX_AGE_HOURS`, `REALERT_HOURS`, `DIGEST_HOUR`, `K8S_NAMESPACES`, ...); defaults are in `monitoring/platform-monitor.py`.
+
 ## Troubleshooting
 
 ### XNAT pod stuck in Init
