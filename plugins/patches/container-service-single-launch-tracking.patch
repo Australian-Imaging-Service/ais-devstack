@@ -1,0 +1,106 @@
+Patch applied to container-service-3.7.2-uq-fat.jar (JS resources inside the jar,
+paths below are relative to META-INF/resources/scripts/xnat/plugin/containerService/).
+Routes single container launches through the bulklaunch endpoint so every launch
+gets a bulk-launch-id and live progress in XNAT's Processing activity panel, and
+adds a site-wide container log viewer used by the progress dialog and the
+Active Processes banner (templates/screens/workflow_alert.vm override in
+manifests/configmap.yaml).
+
+--- a/commandUiLauncher.js	2026-07-10 04:24:36.943255684 +0000
++++ b/commandUiLauncher.js	2026-07-10 04:24:58.020227850 +0000
+@@ -990,6 +990,15 @@
+ 
+                                 // gather form input values
+                                 var dataToPost = form2js($form.get(0), ':', false);
++                                // AIS patch: route single launches through the bulklaunch endpoint so they
++                                // get a bulk-launch-id and live progress tracking in the activity panel.
++                                if (!bulkLaunch && $.type(dataToPost[rootElement]) === 'string') {
++                                    dataToPost[rootElement] = [dataToPost[rootElement]];
++                                    launchUrl = bulkLaunchUrl(wrapperId, rootElement,
++                                        projectContext.length ? projectContext : undefined);
++                                    bulkLaunch = true;
++                                    xmodal.loading.close();
++                                }
+                                 // API method can only receive Map<String, String> so need to stringify more complex params
+                                 // with plan to deserialize them deeper in the code
+                                 $.each(dataToPost, function(key, value) {
+--- a/activityMonitoring.js	2026-07-10 04:24:36.945740296 +0000
++++ b/activityMonitoring.js	2026-07-10 04:25:54.250153603 +0000
+@@ -218,4 +218,76 @@
+         return {succeeded: succeeded, lastProgressIdx: lastProgressIdx};
+     };
+ 
++    // AIS patch: site-wide container log viewer. Accepts either the container
++    // service database id or the Docker container hash (both resolve via
++    // GET /xapi/containers/{id}/logs/{file}).
++    XNAT.plugin.containerService.viewContainerLogs = function(containerId, title) {
++        containerId = '' + containerId;
++        title = title || 'Container Logs';
++        const logFiles = ['stdout', 'stderr'];
++        const bodyId = 'container-log-view-' + containerId.substring(0, 12);
++
++        function loadLogs($body) {
++            $body.empty();
++            logFiles.forEach(function(logFile) {
++                const $section = $('<div style="margin-bottom:1em;"></div>');
++                $section.append($('<h3 style="margin-bottom:0.25em;"></h3>').text(logFile));
++                const $pre = $('<pre style="max-height:320px;overflow:auto;white-space:pre-wrap;"></pre>');
++                $section.append($pre);
++                $body.append($section);
++                $.ajax({
++                    method: 'GET',
++                    url: XNAT.url.rootUrl('/xapi/containers/' + containerId + '/logs/' + logFile),
++                    dataType: 'text'
++                }).done(function(text) {
++                    $pre.text(text && text.length ? text : '(empty)');
++                }).fail(function(xhr) {
++                    if (xhr.status === 401 || xhr.status === 403) {
++                        $pre.text('You do not have permission to view these logs. ' +
++                            'Logs are visible to the user who launched the container, project owners, and administrators.');
++                    } else {
++                        $pre.text('Could not load ' + logFile + ' (HTTP ' + xhr.status + ')');
++                    }
++                });
++            });
++        }
++
++        XNAT.ui.dialog.open({
++            title: title,
++            width: 800,
++            maxBtn: true,
++            content: '<div id="' + bodyId + '"></div>',
++            beforeShow: function(obj) {
++                loadLogs(obj.$modal.find('#' + bodyId));
++            },
++            buttons: [
++                {
++                    label: 'Refresh',
++                    close: false,
++                    action: function(obj) {
++                        loadLogs(obj.$modal.find('#' + bodyId));
++                    }
++                },
++                {
++                    label: 'Close',
++                    isDefault: true,
++                    close: true
++                }
++            ]
++        });
++    };
++
++    // AIS patch: the bulk-launch progress dialog links to
++    // XNAT.plugin.batchLaunch.viewWorkflowDetails, which normally comes from
++    // the batch-launch plugin. That plugin is not installed here, so provide
++    // a fallback that opens the container logs instead.
++    XNAT.plugin.batchLaunch.viewWorkflowDetails = XNAT.plugin.batchLaunch.viewWorkflowDetails ||
++        function(workflowId, containerId) {
++            if (containerId && containerId !== 'null' && containerId !== 'undefined') {
++                XNAT.plugin.containerService.viewContainerLogs(containerId, 'Container Logs (workflow ' + workflowId + ')');
++            } else {
++                XNAT.ui.dialog.message('Container Logs', 'No container is associated with workflow ' + workflowId + ' yet.');
++            }
++        };
++
+  }));
+\ No newline at end of file

@@ -22,6 +22,7 @@ XNAT deployment on k3s with node-local storage for the Australian Imaging Servic
 - XNAT Container Service uses the host Docker daemon through `/var/run/docker.sock`, mounted by `manifests/kustomization.yaml`. Docker runs containers on the host, so host paths must match XNAT's visible paths. Keep the host-side `/data/xnat` symlink mirror in sync with XNAT archive/build mounts, especially when adding new project archive mounts.
 - `manifests/gcs-fuse-mount.yaml` runs `xnat-gcs-fuse`, which mounts `gs://xnat-lucas-archive` read-only at `/srv/xnat-local-storage/gpfs/object-store` and exposes it in XNAT/Jupyter as `/data/xnat/object-store`. Keep the host mirror symlink `/data/xnat/object-store -> /srv/xnat-local-storage/gpfs/object-store` in place for Container Service host-Docker jobs. The archiver may replace verified local archive files with symlinks into `/data/xnat/object-store/sessions/<project>/<session>/...`; keep catalog/session XML files local and verify the FUSE mount before enabling bulk offload.
 - XNAT Container Service pipelines are stored in `container-service/commands/` and installed via `scripts/install-mriqc-container-service.sh`. The bundle includes `xnat/dcm2bids-session:1.5.1` for DICOM-to-NIFTI/BIDS resources, scan-level `xnat/dcm2niix:1.6`, `nipreps/mriqc:24.0.2` through `xnat2bids`, `nipreps/fmriprep:25.2.5` through `xnat2bids`, `pennlinc/aslprep:26.0.3` through `xnat2bids`, Neurodesk `vnmd/qsmxt_8.3.2:20260421` through `xnat2bids`, Neurodesk `vnmd/musclemap_1.3.45:20260701`, and Neurodesk `vnmd/spinalcordtoolbox_7.3.0:20260605`. MRIQC, fMRIPrep, ASLPrep, QSMxT, and session-level MuscleMap wrappers must already have scan-level `NIFTI` resources and `BIDS` JSON sidecars; fMRIPrep and ASLPrep run with `--fs-no-reconall` by default so no FreeSurfer license secret is required by these wrappers. QSMxT expects BIDS-compatible QSM inputs, typically `part-mag` and `part-phase` `T2starw` files with JSON sidecars. The patched Container Service plugin jar adds a read-only `/data/xnat/object-store` Docker bind mount when that path exists, so scan-level dcm2niix, MuscleMap, and Spinal Cord Toolbox can follow absolute symlinks into the object store without rehydrating files; keep `plugins/patches/container-service-object-store-bind.patch` aligned with the jar. Scan-level MuscleMap and Spinal Cord Toolbox process the first `.nii` or `.nii.gz` file in lexical order. DICOM-to-BIDS depends on a site or project BIDS map at `/data/config/bids/bidsmap` or `/data/projects/<project>/config/bids/bidsmap`. The installer enables wrappers site-wide and for existing projects; `manifests/container-service-project-sync.yaml` keeps wrappers enabled for future projects.
+- Container launch status: the Container Service jar is also patched with `plugins/patches/container-service-single-launch-tracking.patch` (JS resources inside the jar) so single container launches post to the `bulklaunch` endpoint, get a `bulk-launch-id`, and show live progress in XNAT's Processing activity panel — the same tracking bulk launches always had. The patch also adds `XNAT.plugin.containerService.viewContainerLogs` (site-wide container log viewer dialog) and a fallback `XNAT.plugin.batchLaunch.viewWorkflowDetails` (the batch-launch plugin that normally defines it is not installed). The Active Processes banner on report pages is overridden via `templates/screens/workflow_alert.vm`, written into Tomcat at pod init by the `xnat-web-init` ConfigMap (`manifests/configmap.yaml`); it adds `[View Logs]` links for container workflows (the workflow `comments` field holds the Docker container hash, which `/xapi/containers/{id}/logs/{file}` accepts directly). Log access is enforced server-side: the launching user, project owners, and admins. Keep both jar patches applied when rebuilding the fat jar, and remember browsers may cache the old launcher JS after a jar update (hard refresh). Site SMTP is unconfigured (`localhost:25`; GCP blocks port-25 egress), so email notifications for container completion are deliberately not implemented.
 - `manifests/project-owner-sync.yaml` keeps `brosnan` and `edge-uploader` in the XNAT `Owners` group for every current and future project. The `edge-uploader` ownership is required because the `xnat-upload` alias token inherits that user's project permissions. The sync runs every 15 minutes using the admin credentials from `xnat-archiver-creds`; apply it with `sudo kubectl apply -f manifests/project-owner-sync.yaml` and trigger a manual job after changes to verify.
 - The site-wide BIDS map lives at `container-service/bidsmap/site-bidsmap.json` and is installed with `scripts/install-bidsmap.sh`. XNAT's dcm2bids map uses exact, case-insensitive `series_description` matches; avoid adding broad or guessed mappings for scouts, B1 maps, reports, ADC/TRACEW derivatives, or project-specific task names without checking the project protocol.
 - OHIF viewer 3.7.2 is hotfixed in `manifests/configmap.yaml` during XNAT pod init so server-side metadata generation scans only `DICOM`/`secondary` resource paths, preserves original DICOM filenames in generated URLs, skips common raw/data extensions such as `.dat`, and skips files larger than 1 GiB by default (`OHIF_METADATA_MAX_SCAN_BYTES` can override). This prevents large raw data files in scan resources from being parsed as DICOM and OOMing Tomcat. Keep the XNAT probe values in `manifests/values.yaml` relaxed enough for synchronous OHIF metadata generation (`liveness.timeoutSeconds: 30`, `liveness.failureThreshold: 10`); the default 5-second single-failure liveness probe can restart Tomcat mid-generation.
@@ -134,6 +135,51 @@ The `xnat-ingest-upload` deployment also hot-patches `xnat-ingest` idempotency (
 The in-cluster `xnat-ingest-upload` deployment is also hot-patched with `ais-devstack/scan-uid-backfill=xnat-ingest-backfill-scan-uids-v3`. The hook runs before staged sessions are archived: it resolves staged session labels to `XNAT_E...` experiment IDs through the project/subject experiment listing (direct `/data/experiments/<label>/...` calls can return HTTP 500), waits until XNAT file counts match staged file counts, range-reads one DICOM header per scan, extracts top-level `SeriesInstanceUID`, and writes `xnat:mrScanData/UID` for blank scan UIDs. Keep equivalent behavior if the deployment is rebuilt; otherwise catalog-only uploads can archive successfully while leaving OHIF with zero instances.
 
 The rsl60 edge `xnat-ingest-sort` deployment keeps `--wait-period 1800` and `AIS_EDGE_AUTO_IMPORT_WAIT_PERIOD=1800`; its `xnat-ingest-sort-wrapper` ConfigMap auto-labeler waits for an unchanged Orthanc study snapshot before applying `xnat-ingest-ready`. Preserve this when rebuilding so slow OpenRecon/derived series are not staged before the study is complete.
+
+### Manual scanner pull into Orthanc and XNAT
+
+When a Cima3T series was acquired but not sent to Orthanc, pull it from the edge
+sort pod rather than from the central XNAT host. Use the edge kubeconfig
+`/home/uqsbollm/ais-edge/kubeconfig-edge-rsl60` and run REST helper scripts
+inside `deploy/xnat-ingest-sort` so Orthanc is reachable. Read the authenticated
+Orthanc URL from the live deployment into an environment variable and pass it to
+the helper process; do not echo it, store it in files, or copy credentials into
+the repo.
+
+For Cima3T, the permanent Orthanc modality may time out or reject C-FIND/C-MOVE
+if it uses an empty local AE title. Create a temporary modality for the pull
+with the Cima3T host/port, remote AET `AWP2130612`, local AET `rsl60`, and a
+longer timeout such as 60 seconds. C-ECHO should return 200 before querying.
+Delete the temporary modality after the pull.
+
+Query Cima3T at `Level=Series` using the routed `PatientID`
+(`<subject>@<group>/<project>`), the scanner `StudyDate`, and a narrow
+`SeriesDescription` wildcard when possible. Do not assume the DICOM `StudyDate`
+is today's date; appended derived series can keep the original study date. Save
+each answer's `SeriesNumber`, `SeriesDescription`, `SeriesInstanceUID`, and
+`NumberOfSeriesRelatedInstances`. Before retrieving, compare each
+`SeriesInstanceUID` with local Orthanc `/tools/find` at `Level=Series` so only
+missing or incomplete series are retrieved. Retrieve with target AET `rsl60`,
+then poll local Orthanc until each series has the expected instance count.
+
+After retrieval, remove `xnat-ingest-skip` and ensure `xnat-ingest-ready` is set
+on the Orthanc study. The next sorter loop should stage it, mark skip again, and
+route it from the fallback `misc...` label to the routed session label such as
+`openrecon.<subject>.<visit>`. Watch the edge sorter, edge `s3-uploader`, and
+central `xnat-upload/xnat-ingest-upload` logs. The edge uploader first copies to
+`incoming/edge-rsl60/...`, then promotes to `staged/...`; the central uploader
+waits for the configured 300-second quiet window before importing.
+
+Verify completion in XNAT through authenticated REST from the upload pod:
+check the experiment scan list, per-scan `DICOM` resource file counts, and the
+expected new scan numbers. The central uploader should then archive the staged
+prefix to `uploaded/<timestamp>/<session>/`. If the scan UID backfill hook ran
+too early and new `xnat_imagescandata.uid` values are blank, populate only those
+blank rows from the recorded `SeriesInstanceUID` values and verify the update.
+Regenerate OHIF metadata with `POST
+/xapi/viewer/projects/<project>/experiments/<experiment-id>`, then `GET` the same
+endpoint and verify the expected series and instance counts. OHIF metadata
+generation is synchronous and can take more than a minute.
 
 For OHIF sessions that show studies/series but no instances, check `xnat_imagescandata.uid`: OHIF maps DICOM `SeriesInstanceUID` to XNAT scan IDs through that field. After restoring catalog-only sessions, regenerate OHIF metadata and verify instance counts; if instances remain zero, populate scan UIDs from the DICOM `SeriesInstanceUID` values and regenerate metadata. Catalog audits should check both zero `xnat_abstractresource.file_count` and nonzero file counts whose catalog XML is missing or has no `cat:entry` elements.
 
@@ -259,7 +305,7 @@ kubectl -n ais-xnat logs xnat-web-0-postgresql-0
 Plugins in the `plugins/` directory are copied to `/srv/xnat-local-storage/xnat/plugins/` during installation.
 
 **Pre-installed plugins:**
-- `container-service-3.7.2-uq-fat.jar` - Container service plugin, patched with `plugins/patches/container-service-object-store-bind.patch` so Docker launches can follow object-store symlink targets
+- `container-service-3.7.2-uq-fat.jar` - Container service plugin, patched with `plugins/patches/container-service-object-store-bind.patch` (Java: Docker launches can follow object-store symlink targets) and `plugins/patches/container-service-single-launch-tracking.patch` (JS: single launches show live progress in the activity panel; site-wide container log viewer)
 
 **To add more plugins:**
 
