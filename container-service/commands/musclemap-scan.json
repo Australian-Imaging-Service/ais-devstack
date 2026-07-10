@@ -87,44 +87,8 @@
   ],
   "xnat": [
     {
-      "name": "musclemap-scan",
-      "label": "MuscleMap",
-      "description": "Run Neurodesk MuscleMap on this scan's NIFTI resource",
-      "contexts": [
-        "xnat:imageScanData"
-      ],
-      "external-inputs": [
-        {
-          "name": "scan",
-          "description": "Input scan with a NIFTI resource.",
-          "type": "Scan",
-          "required": true,
-          "matcher": "'NIFTI' in @.resources[*].label"
-        }
-      ],
-      "derived-inputs": [
-        {
-          "name": "scan-nifti",
-          "description": "The scan-level NIFTI resource.",
-          "type": "Resource",
-          "derived-from-wrapper-input": "scan",
-          "provides-files-for-command-mount": "nifti-in",
-          "matcher": "@.label == 'NIFTI'"
-        }
-      ],
-      "output-handlers": [
-        {
-          "name": "musclemap-resource",
-          "accepts-command-output": "musclemap-output",
-          "as-a-child-of": "scan",
-          "type": "Resource",
-          "label": "MUSCLEMAP"
-        }
-      ]
-    },
-    {
       "name": "musclemap-dicom-scan",
-      "label": "MuscleMap (DICOM)",
+      "label": "MuscleMap",
       "description": "Convert this scan's DICOM resource to NIfTI with dcm2niix, then run Neurodesk MuscleMap on it",
       "contexts": [
         "xnat:imageScanData"

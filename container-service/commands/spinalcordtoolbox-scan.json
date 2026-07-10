@@ -67,44 +67,8 @@
   ],
   "xnat": [
     {
-      "name": "spinalcordtoolbox-deepseg-scan",
-      "label": "Spinal Cord Toolbox",
-      "description": "Run Neurodesk Spinal Cord Toolbox sct_deepseg on this scan's NIFTI resource",
-      "contexts": [
-        "xnat:imageScanData"
-      ],
-      "external-inputs": [
-        {
-          "name": "scan",
-          "description": "Input scan with a NIFTI resource.",
-          "type": "Scan",
-          "required": true,
-          "matcher": "'NIFTI' in @.resources[*].label"
-        }
-      ],
-      "derived-inputs": [
-        {
-          "name": "scan-nifti",
-          "description": "The scan-level NIFTI resource.",
-          "type": "Resource",
-          "derived-from-wrapper-input": "scan",
-          "provides-files-for-command-mount": "nifti-in",
-          "matcher": "@.label == 'NIFTI'"
-        }
-      ],
-      "output-handlers": [
-        {
-          "name": "sct-resource",
-          "accepts-command-output": "sct-output",
-          "as-a-child-of": "scan",
-          "type": "Resource",
-          "label": "SCT"
-        }
-      ]
-    },
-    {
       "name": "spinalcordtoolbox-deepseg-dicom-scan",
-      "label": "Spinal Cord Toolbox (DICOM)",
+      "label": "Spinal Cord Toolbox",
       "description": "Convert this scan's DICOM resource to NIfTI with dcm2niix, then run Neurodesk Spinal Cord Toolbox sct_deepseg on it",
       "contexts": [
         "xnat:imageScanData"

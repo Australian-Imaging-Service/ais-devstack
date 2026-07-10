@@ -22,7 +22,7 @@ data:
         item.split(":", 1)
         for item in os.environ.get(
             "CONTAINER_SERVICE_WRAPPERS",
-            "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session,dcm2niix:dcm2niix-scan,fmriprep-bids:fmriprep-session,aslprep-bids:aslprep-session,qsmxt-bids:qsmxt-session,musclemap-nifti:musclemap-scan,musclemap-nifti:musclemap-dicom-scan,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-scan,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-dicom-scan",
+            "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session,dcm2niix:dcm2niix-scan,fmriprep-bids:fmriprep-session,aslprep-bids:aslprep-session,qsmxt-bids:qsmxt-session,musclemap-nifti:musclemap-dicom-scan,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-dicom-scan",
         ).split(",")
         if item.strip()
     ]
@@ -106,7 +106,7 @@ spec:
                 - name: XNAT_URL
                   value: "http://xnat-web.ais-xnat.svc.cluster.local"
                 - name: CONTAINER_SERVICE_WRAPPERS
-                  value: "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session,dcm2niix:dcm2niix-scan,fmriprep-bids:fmriprep-session,aslprep-bids:aslprep-session,qsmxt-bids:qsmxt-session,musclemap-nifti:musclemap-scan,musclemap-nifti:musclemap-dicom-scan,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-scan,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-dicom-scan"
+                  value: "mriqc-bids:mriqc-session,dcm2bids-session:dcm2bids-session-session,dcm2niix:dcm2niix-scan,fmriprep-bids:fmriprep-session,aslprep-bids:aslprep-session,qsmxt-bids:qsmxt-session,musclemap-nifti:musclemap-dicom-scan,spinalcordtoolbox-deepseg:spinalcordtoolbox-deepseg-dicom-scan"
                 - name: XNAT_USER
                   valueFrom:
                     secretKeyRef:
