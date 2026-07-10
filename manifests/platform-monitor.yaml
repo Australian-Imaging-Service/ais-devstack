@@ -1,0 +1,112 @@
+# Platform monitor
+# Checks disk usage, pod/job/cronjob health, XNAT availability, TLS expiry,
+# Container Service Docker ping, failed XNAT workflows, pending project
+# access requests, and stuck ingest staging. Emails alerts for new problems,
+# recovery notices when they clear, 24h re-alerts while they persist, and a
+# daily digest (dead-man's switch) to the address in the
+# platform-monitor-smtp secret.
+#
+# Install/update (builds the image and creates the SMTP secret):
+#   ./scripts/install-platform-monitor.sh
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/platform-monitor platform-monitor-manual-$(date +%s)
+#
+# State lives at /srv/xnat-local-storage/monitoring/state.json on the host;
+# delete it to re-alert on all currently-active problems.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-monitor
+  namespace: ais-xnat
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-monitor-read
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-monitor-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-monitor-read
+subjects:
+  - kind: ServiceAccount
+    name: platform-monitor
+    namespace: ais-xnat
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-monitor
+  namespace: ais-xnat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # Never let a hung run block later runs (project-owner-sync once hung 13h).
+      activeDeadlineSeconds: 840
+      template:
+        spec:
+          serviceAccountName: platform-monitor
+          restartPolicy: Never
+          containers:
+            - name: monitor
+              image: xnat-platform-monitor:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: SMTP_USER
+                  valueFrom:
+                    secretKeyRef: { name: platform-monitor-smtp, key: username }
+                - name: SMTP_PASS
+                  valueFrom:
+                    secretKeyRef: { name: platform-monitor-smtp, key: password }
+                - name: ALERT_TO
+                  valueFrom:
+                    secretKeyRef: { name: platform-monitor-smtp, key: to }
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef: { name: xnat-archiver-creds, key: username }
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef: { name: xnat-archiver-creds, key: password }
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: xnat-web-postgresql, key: password }
+                - name: XNAT_PUBLIC_URL
+                  value: "https://xnat-lucas.neurodesk.org"
+                - name: TZ_NAME
+                  value: "America/Los_Angeles"
+                - name: DIGEST_HOUR
+                  value: "8"
+              volumeMounts:
+                - name: host-root
+                  mountPath: /host
+                  readOnly: true
+                - name: monitor-state
+                  mountPath: /state
+          volumes:
+            - name: host-root
+              hostPath:
+                path: /
+                type: Directory
+            - name: monitor-state
+              hostPath:
+                path: /srv/xnat-local-storage/monitoring
+                type: DirectoryOrCreate
