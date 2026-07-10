@@ -113,20 +113,57 @@ The Docker client (OkHttp) is built with hardcoded timeouts:
 A 4.5 s read timeout on POST /containers/create makes large Neurodesk images
 (spinalcordtoolbox, musclemap, fmriprep, qsmxt) fail with
 `SocketTimeoutException` -> workflow status `Failed (Staging)` when the create
-call races a fresh image pull/extract on a busy host. We raise readTimeout to
-32000 ms by editing the single sipush operand in place (same 3-byte length, so
-no bytecode offsets shift):
-  offset of `11 11 94` in the class file -> replace with `11 7D 00` (sipush 32000)
-32767 ms is the ceiling of this in-place method (sipush is a signed 16-bit
-operand); a larger value would require an ldc against the constant pool, i.e. a
-source rebuild. To re-apply after a jar rebuild:
+call races a fresh image pull/extract on a busy host.
+
+History: we first raised readTimeout to 32000 ms with an in-place sipush operand
+swap (`11 11 94` -> `11 7D 00`). 32767 ms is the ceiling of that method
+(sipush is a signed 16-bit operand). A ~38 GB image (spinalcordtoolbox 7.3.0)
+still tripped 32 s while extracting on a busy host, so we now raise readTimeout
+to 300000 ms (5 min) by swapping the instruction for `ldc_w` against a new
+Integer constant appended to the constant pool. `ldc_w` (0x13 + u2 index) is the
+same 3-byte length as `sipush`, pushes the same int stack type, and does not
+change Code length / branch targets / StackMapTable offsets, so no source
+rebuild and no verifier changes are needed. The constant is appended at the end
+of the pool (new index = old constant_pool_count = 2133), so no existing pool
+reference shifts. To re-apply after a jar rebuild that reverts to the plain
+plugin (adjust for the current baseline: `11 11 94` if 4.5 s, `11 7d 00` if the
+32 s in-place patch is present):
   python3 - <<'EOF'
-  import zipfile
+  import zipfile, struct, os
   jar='plugins/container-service-3.7.2-uq-fat.jar'
   name='org/nrg/containers/api/DockerControlApi.class'
-  z=zipfile.ZipFile(jar); data=bytearray(z.read(name))
-  assert data.count(b'\x11\x11\x94')==1
-  data[data.index(b'\x11\x11\x94'):][:3]=b'\x11\x7d\x00'
-  # rewrite jar with this member replaced (see build steps in AGENTS.md)
+  NEW_MS=300000
+  zin=zipfile.ZipFile(jar); data=bytearray(zin.read(name))
+  # find constant pool end (parse it)
+  def cp_end(d):
+      p=8; cpc=struct.unpack('>H',d[p:p+2])[0]; p+=2
+      L={7:2,8:2,9:4,10:4,11:4,12:4,3:4,4:4,5:8,6:8,15:3,16:2,18:4,19:2,20:2}
+      i=1
+      while i<cpc:
+          t=d[p]
+          if t==1: p+=3+struct.unpack('>H',d[p+1:p+3])[0]
+          elif t in (5,6): p+=9; i+=1
+          else: p+=1+L[t]
+          i+=1
+      return cpc,p
+  cpc,end=cp_end(data); newidx=cpc          # first free index == old count
+  data[end:end]=bytes([3])+struct.pack('>I',NEW_MS)   # CONSTANT_Integer(NEW_MS)
+  struct.pack_into('>H',data,8,cpc+1)                 # bump constant_pool_count
+  sig=b'\x11\x7d\x00'                                 # sipush 32000 (or 11 11 94 if 4.5s)
+  assert data.count(sig)==1
+  pos=data.index(sig)
+  data[pos:pos+3]=bytes([0x13])+struct.pack('>H',newidx)   # ldc_w #newidx
+  # rewrite jar preserving every other member's compression (see AGENTS.md build)
+  tmp=jar+'.new'
+  with zipfile.ZipFile(tmp,'w') as zo:
+      for it in zin.infolist():
+          zi=zipfile.ZipInfo(it.filename,date_time=it.date_time)
+          zi.compress_type=it.compress_type; zi.external_attr=it.external_attr
+          zi.internal_attr=it.internal_attr; zi.create_system=it.create_system
+          zo.writestr(zi, bytes(data) if it.filename==name else zin.read(it.filename))
+  os.replace(tmp,jar)
   EOF
-Verify with: javap -c -p org.nrg.containers.api.DockerControlApi | grep -A1 readTimeout  # -> sipush 32000
+No JDK/javap on the host; validate by re-parsing the class (constant_pool_count
+== old+1, entry #2133 is Integer==300000, instruction at the site == `13 08 55`)
+and by confirming the plugin loads (no VerifyError/ClassFormatError in the
+xnat-web log) and `GET /xapi/docker/server` returns `"ping":true` after restart.
