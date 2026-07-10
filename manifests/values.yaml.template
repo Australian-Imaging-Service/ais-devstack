@@ -108,7 +108,11 @@ xnat-web:
       periodSeconds: 20
     liveness:
       periodSeconds: 20
+      timeoutSeconds: 30
+      failureThreshold: 10
     readiness:
       periodSeconds: 20
+      timeoutSeconds: 10
+      failureThreshold: 3
 
   timezone: America/Los_Angeles
