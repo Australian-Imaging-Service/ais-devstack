@@ -126,7 +126,7 @@ spec:
                 - name: XNAT_URL
                   value: "http://xnat-web.ais-xnat.svc.cluster.local"
                 - name: XNAT_OWNER_USERS
-                  value: "brosnan"
+                  value: "brosnan,edge-uploader"
                 - name: XNAT_USER
                   valueFrom:
                     secretKeyRef:

@@ -16,7 +16,7 @@
 #   XNAT_NAMESPACE    default: ais-xnat
 #   EDGE_USER         default: edge-uploader
 #   EDGE_EMAIL        default: mail.neurodesk@gmail.com
-#   EDGE_PROJECTS     default: "polimeni ennis dicomtest misc Siemens_cimax"
+#   EDGE_PROJECTS     default: "polimeni ennis dicomtest misc Siemens_cimax openrecon"
 #   ADMIN_SECRET      default: xnat-archiver-creds  (in $XNAT_NAMESPACE)
 #   EDGE_SECRET       default: edge-uploader-creds  (in $XNAT_NAMESPACE)
 
@@ -26,7 +26,7 @@ XNAT_URL="${XNAT_URL:-https://xnat-lucas.neurodesk.org}"
 XNAT_NAMESPACE="${XNAT_NAMESPACE:-ais-xnat}"
 EDGE_USER="${EDGE_USER:-edge-uploader}"
 EDGE_EMAIL="${EDGE_EMAIL:-mail.neurodesk@gmail.com}"
-EDGE_PROJECTS="${EDGE_PROJECTS:-polimeni ennis dicomtest misc Siemens_cimax}"
+EDGE_PROJECTS="${EDGE_PROJECTS:-polimeni ennis dicomtest misc Siemens_cimax openrecon}"
 ADMIN_SECRET="${ADMIN_SECRET:-xnat-archiver-creds}"
 EDGE_SECRET="${EDGE_SECRET:-edge-uploader-creds}"
 
