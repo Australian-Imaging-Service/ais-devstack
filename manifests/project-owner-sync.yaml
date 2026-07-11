@@ -11,6 +11,7 @@ metadata:
   namespace: ais-xnat
 data:
   sync-project-owners.py: |
+    import atexit
     import base64
     import json
     import os
@@ -37,11 +38,21 @@ data:
     def quote(value):
         return urllib.parse.quote(value, safe="")
 
+    session_id = None
+
     def request(method, path, expect_json=False):
+        # Reuse one JSESSION for the whole run. Per-request Basic auth mints a
+        # new 8-hour server-side session each call; at ~70 calls/run every
+        # 15 min that trips concurrentMaxSessions (1000) and locks the admin
+        # account out with 401s until sessions expire or are invalidated.
+        if session_id:
+            headers = {"Cookie": f"JSESSIONID={session_id}"}
+        else:
+            headers = {"Authorization": f"Basic {auth}"}
         req = urllib.request.Request(
             f"{xnat_url}{path}",
             method=method,
-            headers={"Authorization": f"Basic {auth}"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=60) as response:
@@ -54,6 +65,15 @@ data:
         if expect_json:
             return json.loads(body.decode() or "null")
         return body
+
+    def logout():
+        try:
+            request("DELETE", "/data/JSESSION")
+        except Exception:  # noqa: BLE001
+            pass
+
+    session_id = request("POST", "/data/JSESSION").decode().strip()
+    atexit.register(logout)
 
     def assert_owner_user_exists(owner_user):
         user = request("GET", f"/xapi/users/{quote(owner_user)}", expect_json=True)

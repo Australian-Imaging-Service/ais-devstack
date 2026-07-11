@@ -81,6 +81,10 @@ CERT_WARN_DAYS = int(env("CERT_WARN_DAYS", "14"))
 POD_GRACE_MINUTES = int(env("POD_GRACE_MINUTES", "15"))
 STAGED_MAX_AGE_HOURS = int(env("STAGED_MAX_AGE_HOURS", "24"))
 REALERT_HOURS = int(env("REALERT_HOURS", "24"))
+XNAT_SESSION_WARN = int(env("XNAT_SESSION_WARN", "500"))
+XNAT_SESSION_USERS = [
+    u.strip() for u in env("XNAT_SESSION_USERS", "admin,edge-uploader").split(",")
+    if u.strip()]
 WORKFLOW_LOOKBACK_DAYS = int(env("WORKFLOW_LOOKBACK_DAYS", "3"))
 
 STATE_FILE = env("STATE_FILE", "/state/state.json")
@@ -254,25 +258,59 @@ def cron_period_minutes(schedule):
     return 24 * 60
 
 
+def job_condition(job, cond_type):
+    return any(
+        c.get("type") == cond_type and c.get("status") == "True"
+        for c in job.get("status", {}).get("conditions", []) or [])
+
+
+def job_failure_reason(job):
+    return "; ".join(
+        f"{c.get('reason', '')}: {c.get('message', '')}"
+        for c in job.get("status", {}).get("conditions", []) or []
+        if c.get("type") == "Failed")
+
+
 def check_jobs():
     alerted = set(state["alerted_jobs"])
     seen_uids = set()
     cron_lines = []
     for ns in K8S_NAMESPACES:
+        cron_jobs = {}  # cronjob name -> owned jobs
         for job in k8s_get(f"/apis/batch/v1/namespaces/{ns}/jobs").get("items", []):
             name = job["metadata"]["name"]
             uid = job["metadata"]["uid"]
             seen_uids.add(uid)
-            failed = any(
-                c.get("type") == "Failed" and c.get("status") == "True"
-                for c in job.get("status", {}).get("conditions", []) or [])
-            if failed and uid not in alerted:
-                reason = "; ".join(
-                    f"{c.get('reason', '')}: {c.get('message', '')}"
-                    for c in job["status"].get("conditions", [])
-                    if c.get("type") == "Failed")
-                events.append(f"Job {ns}/{name} FAILED ({reason})")
+            owner = next(
+                (o["name"] for o in job["metadata"].get("ownerReferences", []) or []
+                 if o.get("kind") == "CronJob"), None)
+            if owner:
+                # A failing CronJob spawns a new failed Job every period, so
+                # per-job one-time events would email every run. Handled below
+                # as a keyed issue (alert once, re-alert per REALERT_HOURS,
+                # RECOVERED when a run succeeds again).
+                cron_jobs.setdefault(owner, []).append(job)
+                continue
+            if job_condition(job, "Failed") and uid not in alerted:
+                events.append(f"Job {ns}/{name} FAILED ({job_failure_reason(job)})")
                 alerted.add(uid)
+
+        for cj_name, jobs in cron_jobs.items():
+            terminal = [
+                j for j in jobs
+                if job_condition(j, "Failed") or job_condition(j, "Complete")]
+            if not terminal:
+                continue
+            latest = max(
+                terminal,
+                key=lambda j: j.get("status", {}).get("startTime")
+                or j["metadata"]["creationTimestamp"])
+            if job_condition(latest, "Failed"):
+                add_issue(
+                    f"cronjob-failing:{ns}/{cj_name}",
+                    f"CronJob {ns}/{cj_name}: latest run "
+                    f"{latest['metadata']['name']} FAILED "
+                    f"({job_failure_reason(latest)})")
 
         for cj in k8s_get(f"/apis/batch/v1/namespaces/{ns}/cronjobs").get("items", []):
             name = cj["metadata"]["name"]
@@ -322,13 +360,68 @@ def check_tls_cert():
         add_issue("tls-cert", f"TLS certificate for {host} expires in {days_left} days ({not_after:%Y-%m-%d})")
 
 
+def xnat_login():
+    # Use one JSESSION and log out: Basic auth mints a new server-side session
+    # per request, and with the 8-hour sessionTimeout leaked sessions pile up
+    # toward concurrentMaxSessions (1000) and 401-lock the account.
+    req = urllib.request.Request(
+        f"{XNAT_INTERNAL_URL}/data/JSESSION", method="POST",
+        headers=xnat_auth_header())
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return {"Cookie": f"JSESSIONID={resp.read().decode().strip()}"}
+
+
+def xnat_logout(cookie):
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            f"{XNAT_INTERNAL_URL}/data/JSESSION", method="DELETE",
+            headers=cookie), timeout=30)
+    except Exception:
+        pass
+
+
 def check_container_service():
-    status, body = http_get(f"{XNAT_INTERNAL_URL}/xapi/docker/server",
-                            headers=xnat_auth_header(), timeout=30)
-    info = json.loads(body)
-    if info.get("ping") is not True:
-        add_issue("container-service",
-                  f"Container Service Docker ping failed: {json.dumps(info)[:300]}")
+    cookie = xnat_login()
+    try:
+        status, body = http_get(f"{XNAT_INTERNAL_URL}/xapi/docker/server",
+                                headers=cookie, timeout=30)
+        info = json.loads(body)
+        if info.get("ping") is not True:
+            add_issue("container-service",
+                      f"Container Service Docker ping failed: {json.dumps(info)[:300]}")
+    finally:
+        xnat_logout(cookie)
+
+
+def check_xnat_sessions():
+    # Early warning for server-side session pileup (a REST script that leaks
+    # sessions via per-request Basic auth). At concurrentMaxSessions (default
+    # 1000) XNAT 401-locks the account even with correct credentials; alert
+    # well before that. Recovery: DELETE /xapi/users/active/<user> (any admin)
+    # invalidates the piled-up sessions immediately.
+    cookie = xnat_login()
+    try:
+        counts = []
+        for user in XNAT_SESSION_USERS:
+            status, body = http_get(
+                f"{XNAT_INTERNAL_URL}/xapi/users/active/{user}",
+                headers=cookie, timeout=30)
+            try:
+                n = len(json.loads(body))
+            except ValueError:
+                n = 0
+            counts.append(f"{user}={n}")
+            if n > XNAT_SESSION_WARN:
+                add_issue(
+                    f"xnat-sessions:{user}",
+                    f"XNAT user '{user}' has {n} active server-side sessions "
+                    f"(warn >{XNAT_SESSION_WARN}; XNAT rejects logins at "
+                    f"concurrentMaxSessions) — a REST script is likely "
+                    f"leaking sessions via per-request Basic auth. Clear with "
+                    f"DELETE /xapi/users/active/{user}.")
+        digest.append(("XNAT active sessions", ", ".join(counts)))
+    finally:
+        xnat_logout(cookie)
 
 
 def check_database():
@@ -556,6 +649,7 @@ def main():
     run_check("xnat-web", check_xnat_web)
     run_check("tls-cert", check_tls_cert)
     run_check("container-service", check_container_service)
+    run_check("xnat-sessions", check_xnat_sessions)
     run_check("database", check_database)
     run_check("ingest-backlog", check_ingest_backlog)
 
