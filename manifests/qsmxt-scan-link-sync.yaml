@@ -1,0 +1,294 @@
+# QSMxT scan-level output linker
+#
+# QSMxT runs as a *session*-level Container Service wrapper, so its Chimap
+# output lands in a session-level `QSMXT` resource with no link back to the
+# GRE phase scan it was derived from. XNAT's native output handler cannot
+# attach to that scan because QSMxT discovers the phase/magnitude series
+# internally (there is no scan input at launch).
+#
+# This CronJob closes that gap: it finds every session-level `QSMXT` resource,
+# reads each `*_Chimap.json` sidecar's `SeriesNumber` (which QSMxT copies from
+# the phase series), and attaches the Chimap(s) as a scan-level `QSM` resource
+# on that phase scan. Files are attached as **hard links** into the same
+# archive filesystem (no byte duplication; XNAT reports true sizes because it
+# lstat()s the entry and a hard link shares the source inode). If the source
+# Chimap has already been offloaded to a symlink into the object store, the
+# job falls back to a symlink pointing at the same object-store target.
+#
+# Idempotent: skips scans that already carry the expected QSM files.
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/qsmxt-scan-link-sync qsmxt-scan-link-sync-manual-$(date +%s)
+# Dry run (report only): add env DRY_RUN=1 to a one-off job.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qsmxt-scan-link-sync
+  namespace: ais-xnat
+data:
+  qsmxt-scan-link-sync.py: |
+    """Attach QSMxT session-level Chimap output to the derived phase scan."""
+    import base64
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from pathlib import Path
+
+    XNAT_URL = os.environ.get(
+        "XNAT_URL", "http://xnat-web.ais-xnat.svc.cluster.local"
+    ).rstrip("/")
+    USER = os.environ["XNAT_USER"]
+    PASS = os.environ["XNAT_PASS"]
+    ARCHIVE_ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/xnat/archive"))
+    SOURCE_RESOURCE = os.environ.get("SOURCE_RESOURCE", "QSMXT")
+    TARGET_RESOURCE = os.environ.get("TARGET_RESOURCE", "QSM")
+    DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+
+    AUTH = base64.b64encode(f"{USER}:{PASS}".encode()).decode()
+    errors = []
+    created = 0
+    linked_files = 0
+    skipped = 0
+
+    def q(value):
+        return urllib.parse.quote(str(value), safe="")
+
+    def rest(method, path, expect_json=False):
+        req = urllib.request.Request(
+            f"{XNAT_URL}{path}",
+            method=method,
+            headers={"Authorization": f"Basic {AUTH}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                body = response.read()
+                code = response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+        if expect_json:
+            return code, json.loads(body.decode() or "null")
+        return code, body
+
+    def experiment_id(project, label):
+        code, data = rest(
+            "GET",
+            f"/data/projects/{q(project)}/experiments"
+            f"?format=json&columns=ID,label",
+            expect_json=True,
+        )
+        if code != 200 or not data:
+            return None
+        for row in data.get("ResultSet", {}).get("Result", []):
+            if row.get("label") == label:
+                return row.get("ID")
+        return None
+
+    def scan_present(exp_id, scan_id):
+        code, data = rest(
+            "GET",
+            f"/data/experiments/{q(exp_id)}/scans?format=json",
+            expect_json=True,
+        )
+        if code != 200 or not data:
+            return False, ""
+        for row in data.get("ResultSet", {}).get("Result", []):
+            if str(row.get("ID")) == str(scan_id):
+                return True, row.get("series_description", "")
+        return False, ""
+
+    def target_resource_state(exp_id, scan_id):
+        """Return (registered: bool, files: set). The files endpoint returns
+        200-empty for a *non-existent* resource, so existence must be decided
+        from the resources list, not the files listing."""
+        code, data = rest(
+            "GET",
+            f"/data/experiments/{q(exp_id)}/scans/{q(scan_id)}/resources?format=json",
+            expect_json=True,
+        )
+        labels = set()
+        if code == 200 and data:
+            labels = {
+                r.get("label") for r in data.get("ResultSet", {}).get("Result", [])
+            }
+        if TARGET_RESOURCE not in labels:
+            return False, set()
+        code, data = rest(
+            "GET",
+            f"/data/experiments/{q(exp_id)}/scans/{q(scan_id)}"
+            f"/resources/{q(TARGET_RESOURCE)}/files?format=json",
+            expect_json=True,
+        )
+        files = set()
+        if code == 200 and data:
+            files = {r.get("Name") for r in data.get("ResultSet", {}).get("Result", [])}
+        return True, files
+
+    def attach_link(src: Path, dst: Path):
+        """Hard-link src into dst; symlink fallback if src is already offloaded."""
+        if dst.exists() or dst.is_symlink():
+            return "present"
+        if src.is_symlink():
+            os.symlink(os.readlink(src), dst)
+            return "symlink"
+        os.link(src, dst)
+        return "hardlink"
+
+    # ── Discover every session-level QSMXT resource and its Chimap outputs ──
+    # Layout: <archive>/<project>/<arc>/<session>/RESOURCES/QSMXT/qsmxt-*/sub-*/ses-*/anat/*_Chimap.nii
+    chimaps = []
+    for res_dir in ARCHIVE_ROOT.glob(f"*/*/*/RESOURCES/{SOURCE_RESOURCE}"):
+        for nii in res_dir.glob("qsmxt-*/sub-*/ses-*/anat/*_Chimap.nii"):
+            chimaps.append(nii)
+
+    # Group per (session_root, scan_id) -> list of files to attach.
+    #   session_root = <archive>/<project>/<arc>/<session>
+    groups = {}
+    for nii in chimaps:
+        # nii = <session>/RESOURCES/QSMXT/qsmxt-*/sub-*/ses-*/anat/*_Chimap.nii
+        # parents: 0=anat 1=ses 2=sub 3=qsmxt-* 4=QSMXT 5=RESOURCES 6=<session>
+        session_root = nii.parents[6]
+        sidecar = nii.with_suffix(".json")
+        try:
+            series_number = int(json.loads(sidecar.read_text()).get("SeriesNumber"))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{nii}: cannot read SeriesNumber ({exc})")
+            continue
+        key = (session_root, str(series_number))
+        files = groups.setdefault(key, [])
+        files.append(nii)
+        if sidecar.exists():
+            files.append(sidecar)
+
+    for (session_root, scan_id), files in sorted(groups.items()):
+        project = session_root.parents[1].name
+        label = session_root.name
+        try:
+            exp_id = experiment_id(project, label)
+            if not exp_id:
+                errors.append(f"{project}/{label}: could not resolve experiment id")
+                continue
+            present, desc = scan_present(exp_id, scan_id)
+            if not present:
+                errors.append(
+                    f"{project}/{label} ({exp_id}): phase scan {scan_id} "
+                    f"(from Chimap SeriesNumber) not found; skipping"
+                )
+                continue
+
+            registered, existing = target_resource_state(exp_id, scan_id)
+            want = {f.name for f in files}
+            if registered and want.issubset(existing):
+                skipped += 1
+                continue
+
+            scan_dir = session_root / "SCANS" / scan_id / TARGET_RESOURCE
+            print(
+                f"{'[dry-run] ' if DRY_RUN else ''}attach {sorted(want)} -> "
+                f"{project}/{label} scan {scan_id} ('{desc}') [{exp_id}]"
+            )
+            if DRY_RUN:
+                created += 0 if registered else 1
+                continue
+
+            if not registered:
+                code, body = rest(
+                    "PUT",
+                    f"/data/experiments/{q(exp_id)}/scans/{q(scan_id)}"
+                    f"/resources/{q(TARGET_RESOURCE)}?format=NIFTI&content=QSM",
+                )
+                if code not in (200, 201):
+                    errors.append(
+                        f"{project}/{label} scan {scan_id}: PUT resource "
+                        f"failed HTTP {code}: {body[:200]!r}"
+                    )
+                    continue
+                created += 1
+
+            scan_dir.mkdir(parents=True, exist_ok=True)
+            for src in files:
+                dst = scan_dir / src.name
+                try:
+                    result = attach_link(src, dst)
+                    if result in ("hardlink", "symlink"):
+                        linked_files += 1
+                except OSError as exc:
+                    errors.append(f"{dst}: link failed ({exc})")
+
+            code, body = rest(
+                "POST",
+                f"/data/services/refresh/catalog?resource=/archive/experiments/"
+                f"{q(exp_id)}/scans/{q(scan_id)}/resources/{q(TARGET_RESOURCE)}"
+                f"&options=append,populateStats",
+            )
+            if code != 200:
+                errors.append(
+                    f"{project}/{label} scan {scan_id}: catalog refresh "
+                    f"HTTP {code}: {body[:200]!r}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{project}/{label} scan {scan_id}: {exc}")
+
+    print(
+        f"Done. resources_created={created} files_linked={linked_files} "
+        f"scans_skipped={skipped} errors={len(errors)}"
+    )
+    for err in errors:
+        sys.stderr.write(f"ERROR: {err}\n")
+    sys.exit(1 if errors else 0)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qsmxt-scan-link-sync
+  namespace: ais-xnat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/qsmxt-scan-link-sync/qsmxt-scan-link-sync.py
+              env:
+                - name: XNAT_URL
+                  value: "http://xnat-web.ais-xnat.svc.cluster.local"
+                - name: ARCHIVE_ROOT
+                  value: /data/xnat/archive
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: password
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/qsmxt-scan-link-sync
+                  readOnly: true
+                - name: xnat-gpfs
+                  mountPath: /data/xnat
+                  mountPropagation: HostToContainer
+          volumes:
+            - name: script
+              configMap:
+                name: qsmxt-scan-link-sync
+            - name: xnat-gpfs
+              persistentVolumeClaim:
+                claimName: pv-xnat-gpfs
