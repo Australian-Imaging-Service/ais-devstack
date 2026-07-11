@@ -29,6 +29,7 @@ metadata:
 data:
   qsmxt-scan-link-sync.py: |
     """Attach QSMxT session-level Chimap output to the derived phase scan."""
+    import atexit
     import base64
     import json
     import os
@@ -57,11 +58,20 @@ data:
     def q(value):
         return urllib.parse.quote(str(value), safe="")
 
+    SESSION_ID = None
+
     def rest(method, path, expect_json=False):
+        # Reuse one JSESSION per run: per-request Basic auth creates a new
+        # 8-hour server-side session each call, which across the 15-min cron
+        # scripts trips concurrentMaxSessions and 401-locks the admin account.
+        if SESSION_ID:
+            headers = {"Cookie": f"JSESSIONID={SESSION_ID}"}
+        else:
+            headers = {"Authorization": f"Basic {AUTH}"}
         req = urllib.request.Request(
             f"{XNAT_URL}{path}",
             method=method,
-            headers={"Authorization": f"Basic {AUTH}"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=180) as response:
@@ -72,6 +82,19 @@ data:
         if expect_json:
             return code, json.loads(body.decode() or "null")
         return code, body
+
+    def logout():
+        try:
+            rest("DELETE", "/data/JSESSION")
+        except Exception:  # noqa: BLE001
+            pass
+
+    code, body = rest("POST", "/data/JSESSION")
+    if code != 200:
+        sys.stderr.write(f"ERROR: XNAT login failed HTTP {code}: {body[:200]!r}\n")
+        sys.exit(1)
+    SESSION_ID = body.decode().strip()
+    atexit.register(logout)
 
     def experiment_id(project, label):
         code, data = rest(
@@ -285,6 +308,14 @@ spec:
                 - name: xnat-gpfs
                   mountPath: /data/xnat
                   mountPropagation: HostToContainer
+                # The gcsfuse submount does NOT propagate through the recursive
+                # bind of the gpfs PV, so offloaded files' symlinks into
+                # /data/xnat/object-store dangle unless the FUSE mountpoint is
+                # bound as its own volume (same pattern as xnat-web).
+                - name: object-store
+                  mountPath: /data/xnat/object-store
+                  readOnly: true
+                  mountPropagation: HostToContainer
           volumes:
             - name: script
               configMap:
@@ -292,3 +323,7 @@ spec:
             - name: xnat-gpfs
               persistentVolumeClaim:
                 claimName: pv-xnat-gpfs
+            - name: object-store
+              hostPath:
+                path: /srv/xnat-local-storage/gpfs/object-store
+                type: Directory
