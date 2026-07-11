@@ -403,12 +403,19 @@ def check_xnat_sessions():
     try:
         counts = []
         for user in XNAT_SESSION_USERS:
-            status, body = http_get(
-                f"{XNAT_INTERNAL_URL}/xapi/users/active/{user}",
-                headers=cookie, timeout=30)
             try:
-                n = len(json.loads(body))
-            except ValueError:
+                status, body = http_get(
+                    f"{XNAT_INTERNAL_URL}/xapi/users/active/{user}",
+                    headers=cookie, timeout=30)
+                try:
+                    n = len(json.loads(body))
+                except ValueError:
+                    n = 0
+            except urllib.error.HTTPError as exc:
+                # XNAT answers 304 (not an empty list) when the user has no
+                # active sessions.
+                if exc.code != 304:
+                    raise
                 n = 0
             counts.append(f"{user}={n}")
             if n > XNAT_SESSION_WARN:
