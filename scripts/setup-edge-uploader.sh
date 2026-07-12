@@ -4,7 +4,8 @@
 #
 # Creates (or re-asserts):
 #   - localdb XNAT user `edge-uploader` (password generated on first run)
-#   - site-wide Administrator role
+#   - NO site roles: least privilege; project Owner rights are all it needs
+#     (project-owner-sync keeps it Owner on every current and future project)
 #   - Owner membership on a set of XNAT projects (created if missing)
 #   - k8s secret `ais-xnat/edge-uploader-creds` holding the credentials
 #
@@ -89,9 +90,11 @@ else
   [[ "$code" == "201" || "$code" == "200" ]] || { echo "user create failed: HTTP $code" >&2; exit 1; }
 fi
 
-# --- site-wide Administrator role -------------------------------------------
-log "ensuring Administrator role on $EDGE_USER"
-xnat_curl -X PUT "${XNAT_URL}/xapi/users/${EDGE_USER}/roles/Administrator" >/dev/null
+# --- least privilege: make sure no site-wide Administrator role is present ---
+# (was granted historically; removed 2026-07-12 — uploads only need project
+# Owner rights, which project-owner-sync maintains on all projects)
+log "ensuring Administrator role is absent on $EDGE_USER"
+xnat_curl -X DELETE "${XNAT_URL}/xapi/users/${EDGE_USER}/roles/Administrator" >/dev/null || true
 
 # --- projects: create if missing, assign Owner ------------------------------
 for proj in $EDGE_PROJECTS; do
