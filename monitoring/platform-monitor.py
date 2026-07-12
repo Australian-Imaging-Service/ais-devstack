@@ -16,6 +16,7 @@ Checks:
   - newly failed XNAT workflows (Postgres wrk_workflowdata)
   - pending project access requests (Postgres xs_par_table)
   - stuck ingest staging prefixes (SeaweedFS filer)
+  - nightly Postgres dump freshness in GCS (via the object-store FUSE mount)
 
 State lives in STATE_FILE so alerts fire once per problem, not per run.
 """
@@ -86,6 +87,9 @@ XNAT_SESSION_USERS = [
     u.strip() for u in env("XNAT_SESSION_USERS", "admin,edge-uploader").split(",")
     if u.strip()]
 WORKFLOW_LOOKBACK_DAYS = int(env("WORKFLOW_LOOKBACK_DAYS", "3"))
+
+DB_BACKUP_DIR = env("DB_BACKUP_DIR", "/object-store/db-backups")
+DB_BACKUP_MAX_AGE_HOURS = int(env("DB_BACKUP_MAX_AGE_HOURS", "30"))
 
 STATE_FILE = env("STATE_FILE", "/state/state.json")
 DIGEST_HOUR = int(env("DIGEST_HOUR", "8"))
@@ -549,6 +553,41 @@ def check_ingest_backlog():
                   f"Check the xnat-upload/xnat-ingest-upload pod logs.")
 
 
+def check_db_backup():
+    # Nightly pg_dump freshness, read through the dedicated object-store
+    # FUSE hostPath mount (gs://<bucket>/db-backups/, written by the 2am
+    # xnat-gcs-archiver). Alerts when the newest dump is stale, suspiciously
+    # small, or the directory is unreadable (gcsfuse down).
+    try:
+        dumps = [e for e in os.scandir(DB_BACKUP_DIR)
+                 if e.is_file() and e.name.endswith(".sql.gz")]
+    except OSError as exc:
+        add_issue("db-backup",
+                  f"Cannot read DB backup dir {DB_BACKUP_DIR}: {exc} "
+                  f"(object-store FUSE mount missing or xnat-gcs-fuse down?)")
+        return
+    if not dumps:
+        add_issue("db-backup", f"No database dumps found in {DB_BACKUP_DIR}")
+        return
+    newest = max(dumps, key=lambda e: e.stat().st_mtime)
+    size = newest.stat().st_size
+    mtime = datetime.fromtimestamp(newest.stat().st_mtime, tz=timezone.utc)
+    age_hours = (NOW - mtime).total_seconds() / 3600
+    digest.append(("DB backup",
+                   f"{newest.name}: {size / 1e6:.1f} MB, {age_hours:.1f}h old "
+                   f"({len(dumps)} dumps retained)"))
+    if age_hours > DB_BACKUP_MAX_AGE_HOURS:
+        add_issue("db-backup",
+                  f"Newest database dump {newest.name} is {age_hours:.0f}h old "
+                  f"(threshold {DB_BACKUP_MAX_AGE_HOURS}h) — the nightly "
+                  f"xnat-gcs-archiver pg_dump is not landing in GCS. Check the "
+                  f"latest xnat-gcs-archiver job logs in ais-xnat.")
+    elif size < 1_000_000:
+        add_issue("db-backup",
+                  f"Newest database dump {newest.name} is only {size} bytes — "
+                  f"likely truncated or empty.")
+
+
 # ── Alert/recovery/digest emails ─────────────────────────────────────
 
 def send_email(subject, body):
@@ -659,6 +698,7 @@ def main():
     run_check("xnat-sessions", check_xnat_sessions)
     run_check("database", check_database)
     run_check("ingest-backlog", check_ingest_backlog)
+    run_check("db-backup", check_db_backup)
 
     for key in sorted(issues):
         print(f"ISSUE [{key}] {issues[key].splitlines()[0]}")

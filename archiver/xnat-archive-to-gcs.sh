@@ -482,25 +482,52 @@ if [ "$FAILED" -gt 0 ] && [ "${ARCHIVER_FAIL_ON_SESSION_ERRORS:-1}" != "0" ]; th
 fi
 
 # ── Database dump ──────────────────────────────────────────────────
-if [ -n "$DB_PASS" ]; then
+# The DB dump is mandatory: a missing DB_PASS or a failed/truncated dump
+# fails the job (so the platform monitor alerts) instead of silently
+# skipping. Set DB_BACKUP_REQUIRED=0 for an explicit, logged opt-out.
+DB_BACKUP_REQUIRED="${DB_BACKUP_REQUIRED:-1}"
+DB_DUMP_MIN_BYTES="${DB_DUMP_MIN_BYTES:-1000000}"
+db_dump_failed() {
+    log "ERROR: $*"
+    if [ "$DB_BACKUP_REQUIRED" != "0" ]; then
+        EXIT_STATUS=1
+    else
+        log "DB_BACKUP_REQUIRED=0: not failing the job"
+    fi
+}
+if [ -z "$DB_PASS" ]; then
+    db_dump_failed "DB_PASS not set — database was NOT backed up"
+else
     log "Dumping PostgreSQL database..."
     DATE_STAMP=$(date -u '+%Y%m%d-%H%M%S')
+    DUMP_FILE="${WORK_DIR}/xnat-${DATE_STAMP}.sql.gz"
     export PGPASSWORD="$DB_PASS"
-    # Use pg_dump from the PostgreSQL server itself via kubectl exec,
-    # or fall back to direct connection if versions match
-    if pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" 2>/dev/null | \
-       gzip | gsutil cp - "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz"; then
-        log "Database dump uploaded to gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz"
-        # Keep only last 7 database backups
-        gsutil ls "gs://${GCS_BUCKET}/db-backups/" 2>/dev/null | sort | head -n -7 | \
-            xargs -r gsutil rm 2>/dev/null || true
+    # Dump to a local file first so a mid-stream pg_dump failure can never
+    # leave a truncated object in GCS looking like a fresh, valid backup.
+    if ! pg_dump -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" | gzip > "$DUMP_FILE"; then
+        db_dump_failed "pg_dump failed (check client/server version compatibility)"
+    elif ! gzip -t "$DUMP_FILE"; then
+        db_dump_failed "dump file failed gzip integrity check"
+    elif [ "$(stat -c%s "$DUMP_FILE")" -lt "$DB_DUMP_MIN_BYTES" ]; then
+        db_dump_failed "dump is $(stat -c%s "$DUMP_FILE") bytes (< DB_DUMP_MIN_BYTES=${DB_DUMP_MIN_BYTES}) — refusing to trust it"
+    elif ! { DUMP_TRAILER=$(zcat "$DUMP_FILE" | tail -5) && echo "$DUMP_TRAILER" | grep -q "PostgreSQL database dump complete"; }; then
+        db_dump_failed "dump is missing the 'PostgreSQL database dump complete' trailer — truncated"
+    elif ! gsutil cp "$DUMP_FILE" "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz"; then
+        db_dump_failed "upload to gs://${GCS_BUCKET}/db-backups/ failed"
     else
-        log "WARN: Database dump failed (pg_dump version may not match server)"
-        EXIT_STATUS=1
+        REMOTE_SIZE=$(gsutil stat "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz" | awk '/Content-Length/{print $2}')
+        LOCAL_SIZE=$(stat -c%s "$DUMP_FILE")
+        if [ "$REMOTE_SIZE" != "$LOCAL_SIZE" ]; then
+            db_dump_failed "uploaded object size ${REMOTE_SIZE} != local ${LOCAL_SIZE}"
+        else
+            log "Database dump uploaded and verified: gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz (${LOCAL_SIZE} bytes)"
+            # Keep only last 7 database backups
+            gsutil ls "gs://${GCS_BUCKET}/db-backups/" 2>/dev/null | sort | head -n -7 | \
+                xargs -r gsutil rm 2>/dev/null || true
+        fi
     fi
+    rm -f "$DUMP_FILE"
     unset PGPASSWORD
-else
-    log "SKIP: DB_PASS not set, skipping database dump"
 fi
 
 # Invalidate XNAT session
