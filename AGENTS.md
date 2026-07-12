@@ -244,13 +244,13 @@ curl -sS -u "admin:${ADMIN_PW}" -X PUT \
   "https://xnat-lucas.neurodesk.org/data/projects/${PROJ}/users/Owners/edge-uploader"
 ```
 
-Rotate the password (re-stores the secret):
+Rotate the password (re-stores the secret). Note `PUT /xapi/users/<user>/password` does **not** exist on this XNAT (404, verified 2026-07-12); set the password with a JSON `PUT /xapi/users/<user>` instead. Also use HTTP Basic for this call — with JSESSION cookie auth XNAT rejects state-changing `/xapi` calls (CSRF) and curl reports nothing useful:
 
 ```bash
 NEW_PW=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
 curl -sS -u "admin:${ADMIN_PW}" -X PUT \
-  "https://xnat-lucas.neurodesk.org/xapi/users/edge-uploader/password" \
-  -H "Content-Type: text/plain" --data "$NEW_PW"
+  "https://xnat-lucas.neurodesk.org/xapi/users/edge-uploader" \
+  -H "Content-Type: application/json" -d "{\"password\":\"${NEW_PW}\"}"
 sudo kubectl -n ais-xnat delete secret edge-uploader-creds
 sudo kubectl -n ais-xnat create secret generic edge-uploader-creds \
   --from-literal=username=edge-uploader \

@@ -99,7 +99,7 @@ hub:
   services:
     xnat-service:
       admin: true
-      apiToken: "eda886c63564930a7f21ad8465463bf9555bad7d1dfa0a2fb259ac556ea8420e"
+      apiToken: "GENERATE_WITH_openssl_rand_-hex_32"
 
     user-cull:
       command:
@@ -113,10 +113,10 @@ hub:
         - --url=http://localhost:8081/jupyter/hub/api
 
   extraEnv:
-    JUPYTERHUB_CRYPT_KEY_HEX: "62c5252a18d4c48ea3b6ca199f501c439a58be3521d01f0055518a1d2a46c3fe"
+    JUPYTERHUB_CRYPT_KEY_HEX: "GENERATE_WITH_openssl_rand_-hex_32"
     XNAT_HOST: "xnat-web.ais-xnat.svc.cluster.local"
     XNAT_USER: "admin"
-    XNAT_PASSWORD: "hIvzy1-wyssit-durtep"
+    XNAT_PASSWORD: "XNAT_ADMIN_PASSWORD_FROM_xnat-archiver-creds_SECRET"
     # Set to 'google' or 'aaf' to match your OIDC provider
     # This determines the username prefix (google_{sub} or aaf_{sub})
     OIDC_PROVIDER_PREFIX: "google"

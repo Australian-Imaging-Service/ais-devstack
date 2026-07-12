@@ -39,8 +39,8 @@ Interactive tool for uploading medical imaging data (DICOM, NIfTI, etc.) from Ju
 
 Example token:
 ```
-Alias:  2777a4f6-468c-44d7-ab07-7a8c280b342c
-Secret: 4ySxe8r58zUGGrBmfwe9vlSzr15meqrw66jcVJVE0PsxRyM732GNJF1zqEufrmdy
+Alias:  12345678-abcd-ef01-2345-67890abcdef0
+Secret: ExampleSecretValueDoNotUseRealTokensInDocs0000000000000000000000
 ```
 
 ### Step 2: Copy Files to Your Workspace
@@ -233,8 +233,8 @@ from xnat_uploader import XNATUploader
 
 uploader = XNATUploader()
 uploader.set_credentials(
-    alias="2777a4f6-468c-44d7-ab07-7a8c280b342c",
-    secret="4ySxe8r58zUGGrBmfwe9vlSzr15meqrw66jcVJVE0PsxRyM732GNJF1zqEufrmdy"
+    alias="12345678-abcd-ef01-2345-67890abcdef0",
+    secret="ExampleSecretValueDoNotUseRealTokensInDocs0000000000000000000000"
 )
 
 # Validate token
