@@ -90,7 +90,7 @@ xnat-web:
             userAuthUri: https://login.stanford.edu/idp/profile/oidc/authorize
             userInfoUri: https://login.stanford.edu/idp/profile/oidc/userinfo
             clientId: "w-8e73882581ab1d"
-            clientSecret: "8QxdGkgA7rX26ZFC9y4FKYr6nhNzHSWgZBz7"
+            clientSecret: "YOUR_STANFORD_OIDC_CLIENT_SECRET"
             scopes: "openid,profile,email"
             link: '<p>To sign-in using your Stanford credentials, please click on the button below.</p><p><a href="/openid-login?providerId=stanford">Login with Stanford (SUNet ID)</a></p>'
             shouldFilterEmailDomains: false
