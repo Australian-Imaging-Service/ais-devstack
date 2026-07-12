@@ -101,6 +101,13 @@ spec:
                   readOnly: true
                 - name: monitor-state
                   mountPath: /state
+                # Dedicated bind of the gcsfuse submount for the db-backup
+                # check: the submount does not propagate reliably through
+                # the recursive /host bind (same lesson as qsmxt-scan-link-sync).
+                - name: object-store
+                  mountPath: /object-store
+                  readOnly: true
+                  mountPropagation: HostToContainer
           volumes:
             - name: host-root
               hostPath:
@@ -110,3 +117,7 @@ spec:
               hostPath:
                 path: /srv/xnat-local-storage/monitoring
                 type: DirectoryOrCreate
+            - name: object-store
+              hostPath:
+                path: /srv/xnat-local-storage/gpfs/object-store
+                type: Directory
