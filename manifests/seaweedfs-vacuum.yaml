@@ -1,0 +1,118 @@
+# SeaweedFS volume vacuum
+# Filer-level deletes (e.g. the 4am ingest-uploaded-retention CronJob) only mark
+# needles as deleted; disk space on /data/seaweedfs is reclaimed only when the
+# volumes are compacted. On SeaweedFS 3.99 the threshold sweep
+# `volume.vacuum -garbageThreshold 0.1` skips near-100%-garbage volumes, so this
+# job selects volumes from `volume.list` by observed garbage (deleted bytes >=
+# VACUUM_MIN_DELETED_MB, or garbage ratio >= VACUUM_MIN_RATIO) and vacuums each
+# explicitly by volume id. Runs at 5am, after retention, because needle
+# deletions propagate to volume servers asynchronously; garbage not yet visible
+# in volume.list is picked up on the next run.
+#
+# `weed shell` bootstraps over master gRPC at port+10000; the seaweedfs Service
+# (applied ad-hoc, not in this repo) must expose 19333 (master-grpc) and 18888
+# (filer-grpc) or the shell hangs on "WaitUntilConnected". Added 2026-07-11 via:
+#   sudo kubectl -n seaweedfs patch svc seaweedfs --type=json -p='[
+#     {"op":"add","path":"/spec/ports/-","value":{"name":"master-grpc","port":19333,"targetPort":19333,"protocol":"TCP"}},
+#     {"op":"add","path":"/spec/ports/-","value":{"name":"filer-grpc","port":18888,"targetPort":18888,"protocol":"TCP"}}]'
+#
+# Manual trigger:
+#   sudo kubectl -n seaweedfs create job --from=cronjob/seaweedfs-vacuum seaweedfs-vacuum-manual-$(date +%s)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: seaweedfs-vacuum
+  namespace: seaweedfs
+data:
+  vacuum.sh: |
+    #!/bin/sh
+    set -eu
+    MASTER="${MASTER:-seaweedfs.seaweedfs.svc.cluster.local:9333}"
+    MIN_MB="${VACUUM_MIN_DELETED_MB:-64}"
+    MIN_RATIO="${VACUUM_MIN_RATIO:-0.25}"
+
+    list=$(echo volume.list | weed shell -master="$MASTER")
+    echo "$list" | grep -q 'volume id:' || { echo "volume.list returned no volumes" >&2; exit 1; }
+
+    ids=$(echo "$list" | awk -v min_mb="$MIN_MB" -v min_ratio="$MIN_RATIO" '
+      /volume id:/ {
+        id = ""; size = 0; del = 0
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^id:/)                 { split($i, a, ":"); id = a[2] }
+          if ($i ~ /^size:/)               { split($i, a, ":"); size = a[2] }
+          if ($i ~ /^deleted_byte_count:/) { split($i, a, ":"); del = a[2] }
+        }
+        if (id == "" || del == 0) next
+        if (del >= min_mb * 1048576 || (size > 0 && del / size >= min_ratio)) {
+          n += 1; total += del
+          print id
+        }
+      }
+      END { printf "selected %d volumes, %.1f MiB garbage\n", n, total / 1048576 > "/dev/stderr" }')
+
+    if [ -z "$ids" ]; then
+      echo "no volumes above vacuum threshold (>=${MIN_MB}MiB deleted or ratio>=${MIN_RATIO})"
+      exit 0
+    fi
+    echo "vacuuming volumes:" $ids
+
+    { echo lock
+      # selection is done above, so override the default garbageThreshold
+      # (0.3) which otherwise silently skips volumes below it even with -volumeId
+      for id in $ids; do echo "volume.vacuum -garbageThreshold 0.001 -volumeId $id"; done
+      echo unlock
+    } | weed shell -master="$MASTER"
+
+    echo "post-vacuum remaining garbage:"
+    after=$(echo volume.list | weed shell -master="$MASTER")
+    echo "$after" | \
+      awk '/volume id:/ { for (i = 1; i <= NF; i++) if ($i ~ /^deleted_byte_count:/) { split($i, a, ":"); t += a[2] } }
+           END { printf "%.1f MiB across all volumes\n", t / 1048576 }'
+
+    # A stuck master vacuum lock makes every volume.vacuum a silent no-op
+    # ("Vacuum is already running" in the master log) while weed shell still
+    # exits 0. Fail loudly if none of the selected volumes was compacted, so
+    # the platform monitor's failing-CronJob check alerts; recovery is a
+    # seaweedfs deployment restart (the lock is a in-memory counter).
+    for id in $ids; do
+      if ! echo "$after" | grep -q "volume id:$id .*deleted_byte_count:"; then
+        exit 0
+      fi
+    done
+    echo "no selected volume was compacted - master vacuum lock likely stuck;" \
+         "check master log for 'Vacuum is already running' and restart the seaweedfs deployment" >&2
+    exit 1
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: seaweedfs-vacuum
+  namespace: seaweedfs
+spec:
+  schedule: "0 5 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 7200
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: vacuum
+              image: chrislusf/seaweedfs:3.99
+              imagePullPolicy: IfNotPresent
+              command:
+                - sh
+                - /opt/vacuum/vacuum.sh
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/vacuum
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: seaweedfs-vacuum
