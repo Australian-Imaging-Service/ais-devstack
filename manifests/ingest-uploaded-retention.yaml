@@ -8,6 +8,9 @@
 # Copies without a marker are kept and reported. Stale .uploads multipart
 # debris older than the retention window is removed too.
 #
+# Filer-level deletes only mark needles; the disk space is reclaimed by the
+# seaweedfs-vacuum CronJob (manifests/seaweedfs-vacuum.yaml) at 5am.
+#
 # Manual trigger:
 #   sudo kubectl -n ais-xnat create job --from=cronjob/ingest-uploaded-retention ingest-retention-manual-$(date +%s)
 ---
