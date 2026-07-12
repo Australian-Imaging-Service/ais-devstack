@@ -47,6 +47,10 @@ hub:
       username_claim: "sub"
       scope: [openid, profile, email]
       allow_all: true
+      # Shibboleth-based IdPs (e.g. Stanford) only accept client_secret_basic at
+      # the token endpoint and reject oauthenticator's >=16 default
+      # client_secret_post with 400 invalid_request "InvalidEvent".
+      # basic_auth: true
 
       # ===========================================
       # OPTION B: AAF (comment out Google above, uncomment below)

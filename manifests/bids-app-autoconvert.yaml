@@ -1,0 +1,251 @@
+---
+# Reactive "convert-once" orchestrator for the BIDS-App Container Service wrappers
+# (mriqc-session / fmriprep-session / aslprep-session).
+#
+# Those wrappers run xnat2bids-setup, which only *collects* pre-existing scan-level
+# NIFTI + BIDS-sidecar resources into a BIDS tree. On a DICOM-only session the setup
+# step finds nothing and the launch dies as "Failed (Setup)" (very opaque to users).
+#
+# This CronJob watches the Container Service for BIDS-App containers stuck in
+# "Failed (Setup)" on sessions that still lack BIDS resources, runs the
+# dcm2bids-session converter once to populate persistent NIFTI/BIDS resources, and
+# then re-launches the original app so it reuses them. Container ids are globally
+# monotonic, so ordering by id (conversion vs. failed run) prevents convert/relaunch
+# loops with no external state:
+#   - no BIDS + no conversion newer than the failed run -> launch dcm2bids-session
+#   - conversion in progress                            -> wait
+#   - conversion done but still no BIDS (no mappable    -> log & stop (dead end)
+#     series, e.g. spine/QSM)
+#   - BIDS now present, newer than the failed run       -> re-launch the app once
+#
+# Reuses one JSESSION per run and logs out (per AGENTS.md concurrentMaxSessions note).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bids-app-autoconvert
+  namespace: ais-xnat
+data:
+  autoconvert-bids-apps.py: |
+    import base64
+    import http.cookiejar
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    xnat_url = os.environ.get("XNAT_URL", "http://xnat-web.ais-xnat.svc.cluster.local").rstrip("/")
+    username = os.environ["XNAT_USER"]
+    password = os.environ["XNAT_PASS"]
+    dry_run = os.environ.get("DRY_RUN", "0") not in ("", "0", "false", "False")
+    overwrite = os.environ.get("OVERWRITE", "False")
+    # Wrapper names of the BIDS apps to keep healed, and the converter wrapper.
+    app_wrapper_names = [
+        w.strip()
+        for w in os.environ.get(
+            "BIDS_APP_WRAPPERS",
+            "mriqc-session,fmriprep-session,aslprep-session",
+        ).split(",")
+        if w.strip()
+    ]
+    converter_wrapper_name = os.environ.get("CONVERTER_WRAPPER", "dcm2bids-session-session")
+
+    def is_terminal(status):
+        return status == "Complete" or status == "Killed" or status.startswith("Failed")
+
+    auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+
+    def request(method, path, use_basic_auth=False, parse_json=True, body=None):
+        headers = {}
+        if use_basic_auth:
+            headers["Authorization"] = f"Basic {auth}"
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(f"{xnat_url}{path}", method=method, headers=headers, data=data)
+        try:
+            with opener.open(req, timeout=120) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            sys.stderr.write(f"{method} {path} failed with HTTP {exc.code}: {exc.read().decode()[:500]}\n")
+            raise
+        if not parse_json:
+            return raw.decode()
+        return json.loads(raw.decode() or "null") if raw else None
+
+    def session_has_bids(session_id):
+        """True if any scan in the session already carries a BIDS resource."""
+        scans = request("GET", f"/data/experiments/{session_id}/scans?format=json")
+        for scan in scans["ResultSet"]["Result"]:
+            sid = scan["ID"]
+            res = request(
+                "GET",
+                f"/data/experiments/{session_id}/scans/{urllib.parse.quote(str(sid))}/resources?format=json",
+            )
+            for r in res["ResultSet"]["Result"]:
+                if (r.get("label") or "").upper() == "BIDS":
+                    return True
+        return False
+
+    def launch(command_id, wrapper_id, params, what):
+        if dry_run:
+            print(f"DRY_RUN would launch {what} with {json.dumps(params)}")
+            return True
+        resp = request(
+            "POST",
+            f"/xapi/commands/{command_id}/wrappers/{wrapper_id}/launch",
+            body=params,
+        )
+        ok = isinstance(resp, dict) and resp.get("status") == "success"
+        print(f"{'launched' if ok else 'FAILED to launch'} {what}: {json.dumps(resp)[:300]}")
+        return ok
+
+    request("POST", "/data/JSESSION", use_basic_auth=True, parse_json=False)
+    try:
+        commands = request("GET", "/xapi/commands")
+        cmd_name_by_id = {c["id"]: c["name"] for c in commands}
+        # wrapper name -> (command_id, wrapper_id)
+        wrapper_ids = {}
+        for c in commands:
+            for w in c.get("xnat", []) or []:
+                wrapper_ids[w["name"]] = (c["id"], w["id"])
+
+        missing = [n for n in app_wrapper_names + [converter_wrapper_name] if n not in wrapper_ids]
+        if missing:
+            raise SystemExit(f"Missing Container Service wrappers: {', '.join(missing)}")
+
+        conv_cmd_id, conv_wrap_id = wrapper_ids[converter_wrapper_name]
+        app_cmd_ids = {wrapper_ids[n][0]: n for n in app_wrapper_names}  # command_id -> wrapper name
+
+        containers = request("GET", "/xapi/containers") or []
+        # Only top-level launches (skip docker-setup children).
+        mains = [c for c in containers if c.get("subtype") != "docker-setup"]
+
+        def session_of(c):
+            labels = c.get("container-labels") or {}
+            return labels.get("XNAT_ID")
+
+        # Conversions per session (dcm2bids-session containers), sorted by id.
+        conv_by_session = {}
+        for c in mains:
+            if c.get("command-id") == conv_cmd_id:
+                s = session_of(c)
+                if s:
+                    conv_by_session.setdefault(s, []).append(c)
+        for v in conv_by_session.values():
+            v.sort(key=lambda c: c["id"])
+
+        # App containers grouped by (session, app command id).
+        app_groups = {}
+        for c in mains:
+            cid = c.get("command-id")
+            if cid in app_cmd_ids:
+                s = session_of(c)
+                if s:
+                    app_groups.setdefault((s, cid), []).append(c)
+
+        actions = {"convert": 0, "relaunch": 0, "waiting": 0, "dead_end": 0, "manual": 0}
+        for (session_id, cmd_id), conts in sorted(app_groups.items()):
+            conts.sort(key=lambda c: c["id"])
+            latest = conts[-1]
+            wrapper_name = app_cmd_ids[cmd_id]
+            if latest.get("status") != "Failed (Setup)":
+                continue  # already re-run / succeeded — nothing to heal
+
+            convs = conv_by_session.get(session_id, [])
+            newest_conv = convs[-1] if convs else None
+            newest_conv_complete = next((c for c in reversed(convs) if c.get("status") == "Complete"), None)
+            conv_running = any(not is_terminal(c.get("status", "")) for c in convs)
+
+            tag = f"{wrapper_name} on {session_id}"
+            if session_has_bids(session_id):
+                if newest_conv_complete and newest_conv_complete["id"] > latest["id"]:
+                    # A conversion finished after this failed run — replay the app once.
+                    detail = request("GET", f"/xapi/containers/{latest['id']}")
+                    params = {}
+                    for i in detail.get("inputs", []) or []:
+                        if i.get("type") in ("wrapper-external", "command"):
+                            params[i["name"]] = i["value"]
+                    a_cmd, a_wrap = wrapper_ids[wrapper_name]
+                    if launch(a_cmd, a_wrap, params, f"re-run {tag}"):
+                        actions["relaunch"] += 1
+                else:
+                    print(f"MANUAL: {tag} failed setup but BIDS resources exist and predate the run "
+                          f"(partial/empty resources?) — needs review")
+                    actions["manual"] += 1
+            else:
+                if conv_running:
+                    print(f"WAIT: conversion in progress for {session_id}; {tag} will re-run next cycle")
+                    actions["waiting"] += 1
+                elif newest_conv and newest_conv["id"] > latest["id"]:
+                    print(f"DEAD-END: converted {session_id} but no BIDS resources were produced "
+                          f"(no BIDS-mappable series?) — not retrying {tag}")
+                    actions["dead_end"] += 1
+                else:
+                    if launch(conv_cmd_id, conv_wrap_id,
+                              {"session": f"/archive/experiments/{session_id}", "overwrite": overwrite},
+                              f"dcm2bids-session for {session_id} (to heal {tag})"):
+                        actions["convert"] += 1
+
+        print("bids-app-autoconvert summary: " + ", ".join(f"{k}={v}" for k, v in actions.items())
+              + (" [DRY_RUN]" if dry_run else ""))
+    finally:
+        try:
+            request("DELETE", "/data/JSESSION", parse_json=False)
+        except Exception as exc:
+            sys.stderr.write(f"Could not close XNAT session cleanly: {exc}\n")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: bids-app-autoconvert
+  namespace: ais-xnat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: autoconvert
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/bids-app-autoconvert/autoconvert-bids-apps.py
+              env:
+                - name: XNAT_URL
+                  value: "http://xnat-web.ais-xnat.svc.cluster.local"
+                - name: BIDS_APP_WRAPPERS
+                  value: "mriqc-session,fmriprep-session,aslprep-session"
+                - name: CONVERTER_WRAPPER
+                  value: "dcm2bids-session-session"
+                - name: OVERWRITE
+                  value: "False"
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: password
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/bids-app-autoconvert
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: bids-app-autoconvert
