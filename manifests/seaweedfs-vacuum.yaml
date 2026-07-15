@@ -31,6 +31,8 @@ data:
     MASTER="${MASTER:-seaweedfs.seaweedfs.svc.cluster.local:9333}"
     MIN_MB="${VACUUM_MIN_DELETED_MB:-64}"
     MIN_RATIO="${VACUUM_MIN_RATIO:-0.25}"
+    VERIFY_ATTEMPTS="${VACUUM_VERIFY_ATTEMPTS:-12}"
+    VERIFY_DELAY="${VACUUM_VERIFY_DELAY_SECONDS:-5}"
 
     list=$(echo volume.list | weed shell -master="$MASTER")
     echo "$list" | grep -q 'volume id:' || { echo "volume.list returned no volumes" >&2; exit 1; }
@@ -64,22 +66,43 @@ data:
       echo unlock
     } | weed shell -master="$MASTER"
 
+    # A stuck master vacuum lock makes every volume.vacuum a silent no-op
+    # ("Vacuum is already running" in the master log) while weed shell still
+    # exits 0. volume.list can retain the old counters until the next volume
+    # heartbeat even after a successful commit, so retry before deciding the
+    # lock is stuck.
+    attempt=1
+    compacted=0
+    while [ "$attempt" -le "$VERIFY_ATTEMPTS" ]; do
+      after=$(echo volume.list | weed shell -master="$MASTER")
+      for id in $ids; do
+        if ! echo "$after" | grep -q "volume id:$id .*deleted_byte_count:"; then
+          compacted=1
+          break
+        fi
+      done
+      if [ "$compacted" -eq 1 ] || [ "$attempt" -eq "$VERIFY_ATTEMPTS" ]; then
+        break
+      fi
+      echo "selected volumes still report pre-vacuum garbage;" \
+           "retrying in ${VERIFY_DELAY}s (${attempt}/${VERIFY_ATTEMPTS})"
+      sleep "$VERIFY_DELAY"
+      attempt=$((attempt + 1))
+    done
+
     echo "post-vacuum remaining garbage:"
-    after=$(echo volume.list | weed shell -master="$MASTER")
     echo "$after" | \
       awk '/volume id:/ { for (i = 1; i <= NF; i++) if ($i ~ /^deleted_byte_count:/) { split($i, a, ":"); t += a[2] } }
            END { printf "%.1f MiB across all volumes\n", t / 1048576 }'
 
-    # A stuck master vacuum lock makes every volume.vacuum a silent no-op
-    # ("Vacuum is already running" in the master log) while weed shell still
-    # exits 0. Fail loudly if none of the selected volumes was compacted, so
-    # the platform monitor's failing-CronJob check alerts; recovery is a
-    # seaweedfs deployment restart (the lock is a in-memory counter).
-    for id in $ids; do
-      if ! echo "$after" | grep -q "volume id:$id .*deleted_byte_count:"; then
-        exit 0
-      fi
-    done
+    if [ "$compacted" -eq 1 ]; then
+      echo "verified selected volume compaction after ${attempt} check(s)"
+      exit 0
+    fi
+
+    # Fail loudly if none of the selected volumes was compacted, so the
+    # platform monitor's failing-CronJob check alerts; recovery is a
+    # seaweedfs deployment restart (the lock is an in-memory counter).
     echo "no selected volume was compacted - master vacuum lock likely stuck;" \
          "check master log for 'Vacuum is already running' and restart the seaweedfs deployment" >&2
     exit 1
