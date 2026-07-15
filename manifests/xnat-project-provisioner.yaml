@@ -1,0 +1,362 @@
+# Creates XNAT projects required by routed sessions before xnat-ingest tries to
+# upload them. The edge's ready/staged transition is the approval boundary: a
+# syntactically valid project in staged/ is provisioned if it does not exist.
+#
+# The xnat-credentials alias belongs to edge-uploader. XNAT permits that user to
+# create a project and makes it an Owner, so no administrator credentials are
+# copied into xnat-upload. Configured owners are then added and verified. A
+# PatientID route group is also added when it names an existing XNAT user; XNAT
+# misleadingly returns HTTP 200 when asked to add an unknown user, so membership
+# is always verified from the project users listing.
+#
+# Manual trigger:
+#   sudo kubectl -n xnat-upload create job --from=cronjob/xnat-project-provisioner xnat-project-provisioner-manual-$(date +%s)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xnat-project-provisioner
+  namespace: xnat-upload
+data:
+  provision-projects.py: |
+    import atexit
+    import base64
+    import datetime
+    import json
+    import os
+    import re
+    import ssl
+    import sys
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    import boto3
+    import yaml
+    from botocore.exceptions import ClientError
+
+    bucket = os.environ["S3_BUCKET"]
+    root_prefix = os.environ.get("S3_ROOT_PREFIX", "staged/").strip("/") + "/"
+    route_field = os.environ.get("XNAT_PROJECT_ROUTE_FIELD", "PatientID")
+    xnat_url = os.environ["XNAT_URL"].rstrip("/")
+    xnat_user = os.environ["XNAT_USER"]
+    xnat_pass = os.environ["XNAT_PASS"]
+    configured_owners = {
+        value.strip()
+        for value in os.environ.get("XNAT_OWNER_USERS", "brosnan,edge-uploader").split(",")
+        if value.strip()
+    }
+
+    route_re = re.compile(r"^(?P<subject>[^@/]+)@(?P<group>[^/]+)/(?P<project>[^/]+)$")
+    xnat_id_re = re.compile(r"[^a-zA-Z0-9_]+")
+    valid_project_re = re.compile(r"^[A-Za-z0-9_]+$")
+    ssl_context = ssl._create_unverified_context()
+    session_id = None
+
+    def log(event, **fields):
+        payload = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "component": "xnat-project-provisioner",
+            "event": event,
+        }
+        payload.update(fields)
+        print(json.dumps(payload, sort_keys=True), flush=True)
+
+    def xnat_id(value, fallback=""):
+        value = xnat_id_re.sub("_", str(value or "")).strip("_")
+        return value or fallback
+
+    def s3_client():
+        return boto3.client(
+            "s3",
+            endpoint_url=os.environ["AWS_ENDPOINT_URL"],
+            aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+            aws_secret_access_key=os.environ["S3_SECRET_KEY"],
+            region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+        )
+
+    def staged_projects():
+        s3 = s3_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        projects = {}
+        invalid = 0
+        empty = 0
+
+        for page in paginator.paginate(Bucket=bucket, Prefix=root_prefix, Delimiter="/"):
+            for row in page.get("CommonPrefixes", []):
+                prefix = row.get("Prefix", "")
+                session = prefix[len(root_prefix):].strip("/")
+                parts = session.split(".", 2)
+                if len(parts) != 3 or not valid_project_re.fullmatch(parts[0]):
+                    log("session_skipped", session=session, reason="invalid staged session name")
+                    invalid += 1
+                    continue
+
+                # SeaweedFS keeps empty directory skeletons after the upload
+                # wrapper moves a staged session into uploaded/. A prefix alone
+                # is therefore not proof that there is a session to admit.
+                has_files = False
+                object_pages = s3.get_paginator("list_objects_v2").paginate(
+                    Bucket=bucket,
+                    Prefix=prefix,
+                    PaginationConfig={"PageSize": 100},
+                )
+                for object_page in object_pages:
+                    if any(
+                        not item.get("Key", "").endswith("/")
+                        for item in object_page.get("Contents", [])
+                    ):
+                        has_files = True
+                        break
+                if not has_files:
+                    empty += 1
+                    continue
+
+                project = parts[0]
+                group = None
+                metadata_key = f"{prefix}METADATA.yaml"
+                try:
+                    body = s3.get_object(Bucket=bucket, Key=metadata_key)["Body"].read()
+                    metadata = yaml.safe_load(body) or {}
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code", "")
+                    if code in {"NoSuchKey", "404"}:
+                        metadata = {}
+                    else:
+                        raise
+
+                route_value = str(metadata.get(route_field) or "").strip()
+                match = route_re.match(route_value)
+                if match:
+                    routed_project = xnat_id(match.group("project"))
+                    if routed_project != project:
+                        log(
+                            "session_skipped",
+                            session=session,
+                            project=project,
+                            routed_project=routed_project,
+                            reason="staged project does not match routed metadata",
+                        )
+                        invalid += 1
+                        continue
+                    group = xnat_id(match.group("group")) or None
+
+                entry = projects.setdefault(project, {"groups": set(), "sessions": []})
+                entry["sessions"].append(session)
+                if group:
+                    entry["groups"].add(group)
+
+        return projects, invalid, empty
+
+    def raw_request(method, path, headers=None):
+        request = urllib.request.Request(
+            f"{xnat_url}{path}",
+            method=method,
+            headers=headers or {},
+            data=b"" if method == "PUT" else None,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60, context=ssl_context) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def xnat_request(method, path):
+        if not session_id:
+            raise RuntimeError("XNAT session has not been established")
+        return raw_request(method, path, {"Cookie": f"JSESSIONID={session_id}"})
+
+    def logout():
+        if session_id:
+            try:
+                xnat_request("DELETE", "/data/JSESSION")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def result_rows(body):
+        try:
+            payload = json.loads(body.decode() or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return []
+        return payload.get("ResultSet", {}).get("Result", [])
+
+    def project_owners(project):
+        quoted = urllib.parse.quote(project, safe="")
+        status, body = xnat_request("GET", f"/data/projects/{quoted}/users?format=json")
+        if status != 200:
+            raise RuntimeError(f"project users lookup returned HTTP {status}")
+        expected_group = f"{project}_owner".casefold()
+        owners = set()
+        for row in result_rows(body):
+            display_name = str(row.get("displayname") or "").casefold()
+            group_id = str(row.get("GROUP_ID") or row.get("group_id") or "").casefold()
+            if display_name == "owners" or group_id == expected_group:
+                login = row.get("login") or row.get("username")
+                if login:
+                    owners.add(str(login))
+        return owners
+
+    def ensure_project(project, route_groups, uploader):
+        quoted_project = urllib.parse.quote(project, safe="")
+        status, _ = xnat_request("GET", f"/data/projects/{quoted_project}?format=json")
+        created = False
+        if status == 404:
+            query = urllib.parse.urlencode({"name": project, "secondary_ID": project})
+            status, _ = xnat_request("PUT", f"/data/projects/{quoted_project}?{query}")
+            if status not in {200, 201}:
+                raise RuntimeError(f"project create returned HTTP {status}")
+            check_status, _ = xnat_request("GET", f"/data/projects/{quoted_project}?format=json")
+            if check_status != 200:
+                raise RuntimeError(f"created project is not visible (HTTP {check_status})")
+            created = True
+            log("project_created", project=project)
+        elif status != 200:
+            raise RuntimeError(f"project lookup returned HTTP {status}")
+
+        required_owners = set(configured_owners)
+        required_owners.add(uploader)
+        requested_owners = required_owners | set(route_groups)
+        for owner in sorted(requested_owners):
+            quoted_owner = urllib.parse.quote(owner, safe="")
+            status, _ = xnat_request(
+                "PUT",
+                f"/data/projects/{quoted_project}/users/Owners/{quoted_owner}",
+            )
+            if status not in {200, 201}:
+                log("owner_request_failed", project=project, owner=owner, http_status=status)
+
+        owners = project_owners(project)
+        missing_required = sorted(required_owners - owners)
+        if missing_required:
+            raise RuntimeError(f"required Owners not assigned: {','.join(missing_required)}")
+
+        for group in sorted(set(route_groups) - owners):
+            log(
+                "route_owner_deferred",
+                project=project,
+                owner=group,
+                reason="no assignable XNAT user currently exists",
+            )
+
+        log(
+            "project_verified",
+            project=project,
+            created=created,
+            owners=sorted(owners),
+        )
+
+    def main():
+        global session_id
+
+        projects, invalid, empty = staged_projects()
+        if not projects:
+            log(
+                "complete",
+                staged_projects=0,
+                invalid_sessions=invalid,
+                empty_prefixes=empty,
+            )
+            return 1 if invalid else 0
+
+        auth = base64.b64encode(f"{xnat_user}:{xnat_pass}".encode()).decode()
+        status, body = raw_request(
+            "POST",
+            "/data/JSESSION",
+            {"Authorization": f"Basic {auth}"},
+        )
+        if status != 200:
+            log("authentication_failed", http_status=status)
+            return 1
+        session_id = body.decode().strip()
+        atexit.register(logout)
+
+        status, body = xnat_request("GET", "/xapi/users/username")
+        if status != 200 or not body.decode().strip():
+            log("identity_lookup_failed", http_status=status)
+            return 1
+        uploader = body.decode().strip()
+
+        failures = invalid
+        for project, route in sorted(projects.items()):
+            try:
+                ensure_project(project, route["groups"], uploader)
+            except Exception as exc:  # noqa: BLE001
+                failures += 1
+                log("project_failed", project=project, error=str(exc))
+
+        log(
+            "complete",
+            staged_projects=len(projects),
+            failures=failures,
+            empty_prefixes=empty,
+        )
+        return 1 if failures else 0
+
+    raise SystemExit(main())
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: xnat-project-provisioner
+  namespace: xnat-upload
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 180
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: provision
+              image: ghcr.io/akshitbeniwal/xnat-ingest:v5
+              imagePullPolicy: IfNotPresent
+              command:
+                - python3
+                - /opt/xnat-project-provisioner/provision-projects.py
+              env:
+                - name: XNAT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-credentials
+                      key: server
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-credentials
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-credentials
+                      key: password
+                - name: XNAT_OWNER_USERS
+                  value: "brosnan,edge-uploader"
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: access-key
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: s3-credentials
+                      key: secret-key
+                - name: S3_BUCKET
+                  value: "ingest-bucket"
+                - name: AWS_ENDPOINT_URL
+                  value: "http://seaweedfs.seaweedfs.svc.cluster.local:8333"
+                - name: AWS_DEFAULT_REGION
+                  value: "us-east-1"
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/xnat-project-provisioner
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: xnat-project-provisioner
