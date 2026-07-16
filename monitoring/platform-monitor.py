@@ -180,13 +180,18 @@ state.setdefault("alerted_workflows", [])
 
 def check_disk():
     lines = []
+    seen_devices = set()
     for path in DISK_PATHS:
         target = HOST_ROOT.rstrip("/") + path
         try:
+            device = os.stat(target).st_dev
             st = os.statvfs(target)
         except OSError as exc:
             add_issue(f"disk-missing:{path}", f"Cannot stat {path} on host: {exc}")
             continue
+        if device in seen_devices:
+            continue
+        seen_devices.add(device)
         total = st.f_blocks * st.f_frsize
         free = st.f_bavail * st.f_frsize
         used_pct = 100.0 * (1 - free / total) if total else 0.0
