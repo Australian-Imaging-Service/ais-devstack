@@ -28,6 +28,9 @@ patches:
                   - mountPath: /data/xnat/archive/NF1
                     name: xnat-gpfs
                     subPath: archive/NF1
+                  - mountPath: /data/xnat/archive/berg1
+                    name: xnat-gpfs
+                    subPath: archive/berg1
                   - mountPath: /data/xnat/archive/ennis
                     name: xnat-gpfs
                     subPath: archive/ennis
