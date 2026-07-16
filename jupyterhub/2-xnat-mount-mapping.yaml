@@ -32,6 +32,7 @@ data:
     {
       "/data/xnat/archive/DM_R01": "archive/DM_R01",
       "/data/xnat/archive/NF1": "archive/NF1",
+      "/data/xnat/archive/berg1": "archive/berg1",
       "/data/xnat/archive/ennis": "archive/ennis",
       "/data/xnat/archive/goo": "archive/goo",
       "/data/xnat/archive/misc": "archive/misc",
