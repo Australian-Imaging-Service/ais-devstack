@@ -5,7 +5,10 @@
 # `volume.vacuum -garbageThreshold 0.1` skips near-100%-garbage volumes, so this
 # job selects volumes from `volume.list` by observed garbage (deleted bytes >=
 # VACUUM_MIN_DELETED_MB, or garbage ratio >= VACUUM_MIN_RATIO) and vacuums each
-# explicitly by volume id. Runs at 5am, after retention, because needle
+# explicitly by volume id, one at a time, verifying every compact revision
+# before moving on. It also disables the master's periodic automatic vacuum so
+# this CronJob is the only scheduler for the lifetime of the master process.
+# Runs at 5am, after retention, because needle
 # deletions propagate to volume servers asynchronously; garbage not yet visible
 # in volume.list is picked up on the next run.
 #
@@ -15,6 +18,11 @@
 #   sudo kubectl -n seaweedfs patch svc seaweedfs --type=json -p='[
 #     {"op":"add","path":"/spec/ports/-","value":{"name":"master-grpc","port":19333,"targetPort":19333,"protocol":"TCP"}},
 #     {"op":"add","path":"/spec/ports/-","value":{"name":"filer-grpc","port":18888,"targetPort":18888,"protocol":"TCP"}}]'
+#
+# The seaweedfs Deployment (also not in this repo) must keep
+# `-master.garbageThreshold=1.1` in its args. This prevents the master's first
+# automatic sweep after a pod restart from compacting anything before this
+# CronJob can issue `volume.vacuum.disable`.
 #
 # Manual trigger:
 #   sudo kubectl -n seaweedfs create job --from=cronjob/seaweedfs-vacuum seaweedfs-vacuum-manual-$(date +%s)
@@ -33,8 +41,41 @@ data:
     MIN_RATIO="${VACUUM_MIN_RATIO:-0.25}"
     VERIFY_ATTEMPTS="${VACUUM_VERIFY_ATTEMPTS:-12}"
     VERIFY_DELAY="${VACUUM_VERIFY_DELAY_SECONDS:-5}"
+    COMMAND_ATTEMPTS="${VACUUM_COMMAND_ATTEMPTS:-3}"
+    SHELL_TIMEOUT="${VACUUM_SHELL_TIMEOUT_SECONDS:-900}"
 
-    list=$(echo volume.list | weed shell -master="$MASTER")
+    weed_shell() {
+      timeout "$SHELL_TIMEOUT" weed shell -master="$MASTER"
+    }
+
+    volume_state() {
+      snapshot="$1"
+      wanted="$2"
+      echo "$snapshot" | awk -v wanted="$wanted" '
+        /volume id:/ {
+          id = ""; revision = 0; deleted = 0
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^id:/)                 { split($i, a, ":"); id = a[2] }
+            if ($i ~ /^compact_revision:/)   { split($i, a, ":"); revision = a[2] }
+            if ($i ~ /^deleted_byte_count:/) { split($i, a, ":"); deleted = a[2] }
+          }
+          if (id == wanted) {
+            print revision, deleted
+            exit
+          }
+        }'
+    }
+
+    # The master otherwise starts an independent automatic sweep every
+    # approximately 14-16 minutes. This setting is in-memory and is therefore
+    # re-applied on every CronJob run after a master restart.
+    { echo lock
+      echo volume.vacuum.disable
+      echo unlock
+    } | weed_shell
+    echo "disabled master automatic vacuum; controlled per-volume vacuum is authoritative"
+
+    list=$(echo volume.list | weed_shell)
     echo "$list" | grep -q 'volume id:' || { echo "volume.list returned no volumes" >&2; exit 1; }
 
     ids=$(echo "$list" | awk -v min_mb="$MIN_MB" -v min_ratio="$MIN_RATIO" '
@@ -59,53 +100,91 @@ data:
     fi
     echo "vacuuming volumes:" $ids
 
-    { echo lock
-      # selection is done above, so override the default garbageThreshold
-      # (0.3) which otherwise silently skips volumes below it even with -volumeId
-      for id in $ids; do echo "volume.vacuum -garbageThreshold 0.001 -volumeId $id"; done
-      echo unlock
-    } | weed shell -master="$MASTER"
-
     # A stuck master vacuum lock makes every volume.vacuum a silent no-op
     # ("Vacuum is already running" in the master log) while weed shell still
-    # exits 0. volume.list can retain the old counters until the next volume
-    # heartbeat even after a successful commit, so retry before deciding the
-    # lock is stuck.
-    attempt=1
-    compacted=0
-    while [ "$attempt" -le "$VERIFY_ATTEMPTS" ]; do
-      after=$(echo volume.list | weed shell -master="$MASTER")
-      for id in $ids; do
-        if ! echo "$after" | grep -q "volume id:$id .*deleted_byte_count:"; then
-          compacted=1
+    # exits 0. Run one volume per request and require that volume's compact
+    # revision to advance before moving to the next one. A short-lived collision
+    # with an automatic sweep left over from before the disable command is
+    # retried; a permanently stuck guard fails on the exact affected volume.
+    compacted_count=0
+    for id in $ids; do
+      before_state=$(volume_state "$list" "$id")
+      if [ -z "$before_state" ]; then
+        echo "selected volume $id disappeared from volume.list before vacuum" >&2
+        exit 1
+      fi
+      before_revision=${before_state%% *}
+      before_deleted=${before_state#* }
+      command_attempt=1
+      compacted=0
+
+      while [ "$command_attempt" -le "$COMMAND_ATTEMPTS" ]; do
+        echo "vacuuming volume $id (revision=$before_revision deleted_bytes=$before_deleted, command attempt ${command_attempt}/${COMMAND_ATTEMPTS})"
+        if ! { echo lock
+               # Selection is done above, so override the default threshold
+               # (0.3), which can silently skip an explicitly selected volume.
+               echo "volume.vacuum -garbageThreshold 0.001 -volumeId $id"
+               echo unlock
+             } | weed_shell; then
+          echo "volume $id vacuum command failed or exceeded ${SHELL_TIMEOUT}s" >&2
+          if [ "$command_attempt" -lt "$COMMAND_ATTEMPTS" ]; then
+            sleep "$VERIFY_DELAY"
+          fi
+          command_attempt=$((command_attempt + 1))
+          continue
+        fi
+
+        verify_attempt=1
+        while [ "$verify_attempt" -le "$VERIFY_ATTEMPTS" ]; do
+          if ! after=$(echo volume.list | weed_shell); then
+            echo "volume.list verification for volume $id failed or exceeded ${SHELL_TIMEOUT}s" >&2
+            if [ "$verify_attempt" -lt "$VERIFY_ATTEMPTS" ]; then
+              sleep "$VERIFY_DELAY"
+            fi
+            verify_attempt=$((verify_attempt + 1))
+            continue
+          fi
+          after_state=$(volume_state "$after" "$id")
+          if [ -z "$after_state" ]; then
+            echo "volume $id disappeared from volume.list while verifying vacuum" >&2
+            exit 1
+          fi
+          after_revision=${after_state%% *}
+          after_deleted=${after_state#* }
+          if [ "$after_revision" -gt "$before_revision" ]; then
+            echo "verified volume $id compacted: revision $before_revision->$after_revision, deleted_bytes $before_deleted->$after_deleted"
+            compacted=1
+            compacted_count=$((compacted_count + 1))
+            break
+          fi
+          if [ "$verify_attempt" -lt "$VERIFY_ATTEMPTS" ]; then
+            echo "volume $id revision still $after_revision; retrying verification in ${VERIFY_DELAY}s (${verify_attempt}/${VERIFY_ATTEMPTS})"
+            sleep "$VERIFY_DELAY"
+          fi
+          verify_attempt=$((verify_attempt + 1))
+        done
+
+        if [ "$compacted" -eq 1 ]; then
           break
         fi
+        if [ "$command_attempt" -lt "$COMMAND_ATTEMPTS" ]; then
+          echo "volume $id did not compact; retrying the vacuum command"
+        fi
+        command_attempt=$((command_attempt + 1))
       done
-      if [ "$compacted" -eq 1 ] || [ "$attempt" -eq "$VERIFY_ATTEMPTS" ]; then
-        break
+
+      if [ "$compacted" -ne 1 ]; then
+        echo "volume $id was not compacted after ${COMMAND_ATTEMPTS} command attempt(s);" \
+             "master vacuum guard may be stuck - check for 'Vacuum is already running'" >&2
+        exit 1
       fi
-      echo "selected volumes still report pre-vacuum garbage;" \
-           "retrying in ${VERIFY_DELAY}s (${attempt}/${VERIFY_ATTEMPTS})"
-      sleep "$VERIFY_DELAY"
-      attempt=$((attempt + 1))
     done
 
     echo "post-vacuum remaining garbage:"
     echo "$after" | \
       awk '/volume id:/ { for (i = 1; i <= NF; i++) if ($i ~ /^deleted_byte_count:/) { split($i, a, ":"); t += a[2] } }
            END { printf "%.1f MiB across all volumes\n", t / 1048576 }'
-
-    if [ "$compacted" -eq 1 ]; then
-      echo "verified selected volume compaction after ${attempt} check(s)"
-      exit 0
-    fi
-
-    # Fail loudly if none of the selected volumes was compacted, so the
-    # platform monitor's failing-CronJob check alerts; recovery is a
-    # seaweedfs deployment restart (the lock is an in-memory counter).
-    echo "no selected volume was compacted - master vacuum lock likely stuck;" \
-         "check master log for 'Vacuum is already running' and restart the seaweedfs deployment" >&2
-    exit 1
+    echo "verified all $compacted_count selected volume(s)"
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -119,11 +198,13 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 1
+      # The script retries only the affected volume. Re-running the complete
+      # batch can duplicate successful compactions and obscure the first error.
+      backoffLimit: 0
       activeDeadlineSeconds: 7200
       template:
         spec:
-          restartPolicy: OnFailure
+          restartPolicy: Never
           containers:
             - name: vacuum
               image: chrislusf/seaweedfs:3.99
