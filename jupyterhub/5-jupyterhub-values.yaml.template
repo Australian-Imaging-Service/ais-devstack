@@ -330,13 +330,13 @@ hub:
           """
           Translate an XNAT container-internal path to the real NFS subPath.
 
-          Matches the source against known XNAT archive mount points (from the
-          ConfigMap) and returns the corresponding NFS subPath. Any path components
-          after the matched prefix are appended.
+          Matches the source against the XNAT archive root mapping from the
+          ConfigMap and returns the corresponding volume subPath. Any path
+          components after the matched prefix are appended.
 
-          e.g. source="/data/xnat/archive/proj_1/arc001"
-               mapping has "/data/xnat/archive/proj_1" -> "uq01/pool01/proj_1/xnat"
-               returns "uq01/pool01/proj_1/xnat/arc001"
+          e.g. source="/data/xnat/archive/my-project/arc001"
+               mapping has "/data/xnat/archive" -> "archive"
+               returns "archive/my-project/arc001"
 
           Returns (subpath, matched) where matched=False means fallback was used.
           """

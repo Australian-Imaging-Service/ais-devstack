@@ -1,26 +1,16 @@
 # ConfigMap: XNAT archive path to shared local-storage subPath mapping
 # ====================================================
-# Maps XNAT container-internal mount paths to the actual NFS subPaths
-# on the xnat-gpfs volume (/srv/xnat-local-storage/gpfs on xnat-host).
+# Maps the XNAT container-internal archive root to the archive subPath on the
+# xnat-gpfs volume (/srv/xnat-local-storage/gpfs on xnat-host).
 #
 # XNAT's JupyterHub plugin returns mount sources as container-internal
-# paths (e.g., /data/xnat/archive/proj_1). These do NOT correspond to
-# the actual NFS directory structure because XNAT uses custom subPath
-# mappings in its StatefulSet (see manifests/kustomization.yaml).
+# paths (e.g., /data/xnat/archive/my-project/arc001). The JupyterHub
+# pre_spawn_hook translates that prefix to the volume's archive subPath and
+# appends the project/session remainder.
 #
-# This ConfigMap bridges that gap: the JupyterHub pre_spawn_hook reads
-# this mapping to translate XNAT paths into correct NFS subPaths when
-# mounting project data into Neurodesk user pods.
-#
-# HOW TO ADD A NEW PROJECT:
-#   1. Add the XNAT archive mount to manifests/kustomization.yaml
-#   2. Add a corresponding entry here mapping the XNAT path to the NFS subPath
-#   3. Apply both: kubectl apply -f this file, then upgrade JupyterHub
-#
-# The keys are XNAT container paths, the values are NFS subPaths on /gpfs.
-# If the XNAT API returns a path with additional components after the key
-# (e.g., /data/xnat/archive/proj_1/arc001), the remainder is appended
-# to the NFS subPath automatically (e.g., uq01/pool01/proj_1/xnat/arc001).
+# New projects under /srv/xnat-local-storage/gpfs/archive require no mapping
+# change. If the XNAT API returns /data/xnat/archive/my-project/arc001, the
+# resolved volume subPath is archive/my-project/arc001.
 # ====================================================
 apiVersion: v1
 kind: ConfigMap
@@ -30,15 +20,5 @@ metadata:
 data:
   mount-mapping.json: |
     {
-      "/data/xnat/archive/DM_R01": "archive/DM_R01",
-      "/data/xnat/archive/NF1": "archive/NF1",
-      "/data/xnat/archive/berg1": "archive/berg1",
-      "/data/xnat/archive/ennis": "archive/ennis",
-      "/data/xnat/archive/goo": "archive/goo",
-      "/data/xnat/archive/misc": "archive/misc",
-      "/data/xnat/archive/nf": "archive/nf",
-      "/data/xnat/archive/openrecon": "archive/openrecon",
-      "/data/xnat/archive/proj_1": "uq01/pool01/proj_1/xnat",
-      "/data/xnat/archive/proj_2": "uq02/pool02/proj_2/xnat",
-      "/data/xnat/archive/test": "test/xnat"
+      "/data/xnat/archive": "archive"
     }
