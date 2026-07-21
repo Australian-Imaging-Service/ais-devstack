@@ -119,10 +119,13 @@ backup_session_from_local() {
         return 1
     fi
 
-    # -e ignores symlinks: offloaded files already live in the bucket, and
-    # following their symlinks would re-read them through the FUSE mount.
+    # gcloud storage rsync ignores symlinks by default. Keep the flag explicit:
+    # offloaded files already live in the bucket, and following their symlinks
+    # would re-read them through the FUSE mount.
     log "Syncing local archive ${project}/${label} from ${session_dir} -> ${gcs_path}"
-    if gsutil -m -q rsync -r -e "$session_dir" "${gcs_path}/" 2>&1; then
+    if gcloud storage rsync --quiet --no-user-output-enabled \
+        --recursive --ignore-symlinks \
+        "$session_dir" "${gcs_path}/" 2>&1; then
         return 0
     fi
 
@@ -170,7 +173,8 @@ backup_session_from_rest() {
     fi
 
     log "Syncing REST export ${project}/${label} -> ${gcs_path}"
-    if gsutil -m -q rsync -r "$extract_dir" "${gcs_path}/" 2>&1; then
+    if gcloud storage rsync --quiet --no-user-output-enabled \
+        --recursive "$extract_dir" "${gcs_path}/" 2>&1; then
         return 0
     fi
 
@@ -358,16 +362,17 @@ while IFS=$'\t' read -r project label session_id; do
     # The marker alone is not trusted: sessions can gain files after their
     # first backup (e.g. appended OpenRecon/derived series), so local files
     # newer than the marker force an incremental re-sync.
-    MARKER_STAT=$(gsutil stat "${GCS_PATH}/.backup_complete" 2>/dev/null || true)
-    if [ -n "$MARKER_STAT" ]; then
-        MARKER_EPOCH=$(printf '%s\n' "$MARKER_STAT" \
-            | sed -n 's/^ *Creation time: *//p' | head -1)
-        MARKER_EPOCH=$(date -u -d "$MARKER_EPOCH" +%s 2>/dev/null || echo 0)
+    MARKER_CREATED=$(gcloud storage objects describe \
+        "${GCS_PATH}/.backup_complete" --format='value(creation_time)' \
+        2>/dev/null || true)
+    if [ -n "$MARKER_CREATED" ]; then
+        MARKER_EPOCH=$(date -u -d "$MARKER_CREATED" +%s 2>/dev/null || echo 0)
         NEWEST_LOCAL=$(newest_local_mtime "$(local_session_dir "$project" "$label")")
         if [ "$MARKER_EPOCH" -gt 0 ] && [ -n "$NEWEST_LOCAL" ] \
             && [ "$NEWEST_LOCAL" -gt "$MARKER_EPOCH" ]; then
             log "STALE: ${project}/${label} has local files newer than its backup marker; re-syncing"
-            gsutil -q rm "${GCS_PATH}/.backup_complete" 2>/dev/null || true
+            gcloud storage rm --quiet --no-user-output-enabled \
+                "${GCS_PATH}/.backup_complete" 2>/dev/null || true
         else
             log "SKIP: ${project}/${label} already backed up"
             if truthy "$OFFLOAD_EXISTING_BACKUPS"; then
@@ -375,7 +380,8 @@ while IFS=$'\t' read -r project label session_id; do
                     continue
                 elif truthy "$REPAIR_INCOMPLETE_BACKUPS"; then
                     log "WARN: Refreshing incomplete backup for ${project}/${label}"
-                    gsutil -q rm "${GCS_PATH}/.backup_complete" 2>/dev/null || true
+                    gcloud storage rm --quiet --no-user-output-enabled \
+                        "${GCS_PATH}/.backup_complete" 2>/dev/null || true
                 else
                     FAILED=$((FAILED + 1))
                     continue
@@ -468,7 +474,9 @@ while IFS=$'\t' read -r project label session_id; do
 
     # Write marker so we skip on next run. When offload is enabled, this is
     # written only after local symlink replacement has also succeeded.
-    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" | gsutil -q cp - "${GCS_PATH}/.backup_complete"
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" | \
+        gcloud storage cp --quiet --no-user-output-enabled \
+        - "${GCS_PATH}/.backup_complete"
     BACKED_UP=$((BACKED_UP + 1))
     log "OK: ${project}/${label} backed up"
 
@@ -512,18 +520,26 @@ else
         db_dump_failed "dump is $(stat -c%s "$DUMP_FILE") bytes (< DB_DUMP_MIN_BYTES=${DB_DUMP_MIN_BYTES}) — refusing to trust it"
     elif ! { DUMP_TRAILER=$(zcat "$DUMP_FILE" | tail -5) && echo "$DUMP_TRAILER" | grep -q "PostgreSQL database dump complete"; }; then
         db_dump_failed "dump is missing the 'PostgreSQL database dump complete' trailer — truncated"
-    elif ! gsutil cp "$DUMP_FILE" "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz"; then
+    elif ! gcloud storage cp "$DUMP_FILE" \
+        "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz"; then
         db_dump_failed "upload to gs://${GCS_BUCKET}/db-backups/ failed"
     else
-        REMOTE_SIZE=$(gsutil stat "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz" | awk '/Content-Length/{print $2}')
+        REMOTE_SIZE=$(gcloud storage objects describe \
+            "gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz" \
+            --format='value(size)')
         LOCAL_SIZE=$(stat -c%s "$DUMP_FILE")
         if [ "$REMOTE_SIZE" != "$LOCAL_SIZE" ]; then
             db_dump_failed "uploaded object size ${REMOTE_SIZE} != local ${LOCAL_SIZE}"
         else
             log "Database dump uploaded and verified: gs://${GCS_BUCKET}/db-backups/xnat-${DATE_STAMP}.sql.gz (${LOCAL_SIZE} bytes)"
             # Keep only last 7 database backups
-            gsutil ls "gs://${GCS_BUCKET}/db-backups/" 2>/dev/null | sort | head -n -7 | \
-                xargs -r gsutil rm 2>/dev/null || true
+            OLD_BACKUPS=$(gcloud storage ls "gs://${GCS_BUCKET}/db-backups/" \
+                2>/dev/null | sort | head -n -7 || true)
+            if [ -n "$OLD_BACKUPS" ]; then
+                printf '%s\n' "$OLD_BACKUPS" | \
+                    gcloud storage rm --quiet --no-user-output-enabled \
+                    --read-paths-from-stdin 2>/dev/null || true
+            fi
         fi
     fi
     rm -f "$DUMP_FILE"

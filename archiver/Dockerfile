@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     unzip \
     postgresql-client \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && gcloud storage --help >/dev/null
 
 COPY xnat-archive-to-gcs.sh /usr/local/bin/xnat-archive-to-gcs.sh
 RUN chmod +x /usr/local/bin/xnat-archive-to-gcs.sh
