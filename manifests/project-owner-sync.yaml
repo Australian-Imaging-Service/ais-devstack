@@ -26,7 +26,9 @@ data:
     password = os.environ["XNAT_PASS"]
     owner_users = [
         item.strip()
-        for item in os.environ.get("XNAT_OWNER_USERS", "brosnan").split(",")
+        for item in os.environ.get(
+            "XNAT_OWNER_USERS", "brosnan,edge-uploader,sciget"
+        ).split(",")
         if item.strip()
     ]
 
@@ -190,7 +192,7 @@ spec:
                 - name: XNAT_URL
                   value: "http://xnat-web.ais-xnat.svc.cluster.local"
                 - name: XNAT_OWNER_USERS
-                  value: "brosnan,edge-uploader"
+                  value: "brosnan,edge-uploader,sciget"
                 - name: XNAT_USER
                   valueFrom:
                     secretKeyRef:

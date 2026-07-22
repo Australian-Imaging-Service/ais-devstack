@@ -19,9 +19,12 @@ The installer loads:
 - `commands/dcm2bids-session.json` - XNAT's `xnat/dcm2bids-session:1.5.1`
   converter. It converts scan-level `DICOM` resources into scan-level `NIFTI`
   resources and `BIDS` JSON sidecars using the site or project BIDS map.
-- `commands/dcm2niix-scan.json` - XNAT's `xnat/dcm2niix:1.6` scan-level
-  converter. It converts a scan's `DICOM` resource into a scan resource labeled
-  `NIFTI`; BIDS JSON sidecars are enabled by default.
+- `commands/dcm2niix-scan.json` - XNAT's `xnat/dcm2niix:1.6` scan- and
+  session-level converter. The `dcm2niix-scan` wrapper converts one scan's
+  `DICOM` resource into a scan resource labeled `NIFTI`. The
+  `dcm2niix-session` wrapper recursively converts every DICOM series in an MR
+  session into a session resource labeled `NIFTI`. BIDS JSON sidecars are
+  enabled by default for both wrappers.
 - `commands/mriqc-session.json` - `nipreps/mriqc:24.0.2` participant-level
   MRIQC command, enabled site-wide for `xnat:mrSessionData`.
 - `commands/fmriprep-session.json` - `nipreps/fmriprep:25.2.5`

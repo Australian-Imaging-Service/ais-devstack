@@ -43,7 +43,9 @@ data:
     xnat_pass = os.environ["XNAT_PASS"]
     configured_owners = {
         value.strip()
-        for value in os.environ.get("XNAT_OWNER_USERS", "brosnan,edge-uploader").split(",")
+        for value in os.environ.get(
+            "XNAT_OWNER_USERS", "brosnan,edge-uploader,sciget"
+        ).split(",")
         if value.strip()
     }
 
@@ -335,7 +337,7 @@ spec:
                       name: xnat-credentials
                       key: password
                 - name: XNAT_OWNER_USERS
-                  value: "brosnan,edge-uploader"
+                  value: "brosnan,edge-uploader,sciget"
                 - name: S3_ACCESS_KEY
                   valueFrom:
                     secretKeyRef:
