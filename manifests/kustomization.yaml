@@ -1,6 +1,8 @@
 # Kustomization for XNAT StatefulSet patches
 # Adds custom local-PV volume mounts for archive, prearchive, build, plugins,
-# and the host Docker socket used by XNAT Container Service.
+# and the host Docker socket used by XNAT Container Service. The complete
+# archive tree is mounted at once so dynamically-created projects use durable
+# node-local storage without requiring a StatefulSet change.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -17,47 +19,12 @@ patches:
             containers:
               - name: xnat-web
                 volumeMounts:
-                  - $patch: delete
-                    mountPath: /data/xnat/archive
+                  - mountPath: /data/xnat/archive
+                    name: xnat-gpfs
+                    subPath: archive
                   - mountPath: /data/xnat/prearchive
                     name: xnat-nfs
                     subPath: data/prearchive
-                  - mountPath: /data/xnat/archive/DM_R01
-                    name: xnat-gpfs
-                    subPath: archive/DM_R01
-                  - mountPath: /data/xnat/archive/NF1
-                    name: xnat-gpfs
-                    subPath: archive/NF1
-                  - mountPath: /data/xnat/archive/berg1
-                    name: xnat-gpfs
-                    subPath: archive/berg1
-                  - mountPath: /data/xnat/archive/chan1
-                    name: xnat-gpfs
-                    subPath: archive/chan1
-                  - mountPath: /data/xnat/archive/ennis
-                    name: xnat-gpfs
-                    subPath: archive/ennis
-                  - mountPath: /data/xnat/archive/goo
-                    name: xnat-gpfs
-                    subPath: archive/goo
-                  - mountPath: /data/xnat/archive/misc
-                    name: xnat-gpfs
-                    subPath: archive/misc
-                  - mountPath: /data/xnat/archive/nf
-                    name: xnat-gpfs
-                    subPath: archive/nf
-                  - mountPath: /data/xnat/archive/openrecon
-                    name: xnat-gpfs
-                    subPath: archive/openrecon
-                  - mountPath: /data/xnat/archive/proj_1
-                    name: xnat-gpfs
-                    subPath: uq01/pool01/proj_1/xnat
-                  - mountPath: /data/xnat/archive/proj_2
-                    name: xnat-gpfs
-                    subPath: uq02/pool02/proj_2/xnat
-                  - mountPath: /data/xnat/archive/test
-                    name: xnat-gpfs
-                    subPath: test/xnat
                   - mountPath: /data/xnat/build
                     name: xnat-build
                   - mountPath: /data/xnat/object-store
@@ -68,9 +35,6 @@ patches:
                     name: xnat-nfs
                     readOnly: true
                     subPath: plugins
-                  - mountPath: /data/xnat/archive/CONTAINER_EXEC
-                    name: xnat-nfs
-                    subPath: data/CONTAINER_EXEC
                   - mountPath: /usr/local/bin/init.sh
                     name: init
                     readOnly: true

@@ -1,8 +1,8 @@
 {
   "name": "dcm2niix",
   "label": "dcm2niix",
-  "description": "Runs dcm2niix on a scan-level DICOM resource and stores NIfTI outputs on the scan.",
-  "version": "1.6-ais.1",
+  "description": "Runs dcm2niix on either a scan-level DICOM resource or every DICOM series in an MR session and stores the NIfTI outputs on the selected XNAT object.",
+  "version": "1.6-ais.2",
   "schema-version": "1.0",
   "type": "docker",
   "image": "xnat/dcm2niix:1.6",
@@ -100,6 +100,34 @@
           "name": "nifti-resource",
           "accepts-command-output": "nifti",
           "as-a-child-of": "scan",
+          "type": "Resource",
+          "label": "NIFTI"
+        }
+      ]
+    },
+    {
+      "name": "dcm2niix-session",
+      "label": "dcm2niix (whole session)",
+      "description": "Convert every DICOM series in this MR session to NIfTI with dcm2niix",
+      "contexts": [
+        "xnat:mrSessionData"
+      ],
+      "external-inputs": [
+        {
+          "name": "session",
+          "description": "Input MR session. All files in the session archive are mounted read-only and dcm2niix recursively converts every DICOM series it finds.",
+          "type": "Session",
+          "required": true,
+          "provides-files-for-command-mount": "dicom-in",
+          "load-children": false
+        }
+      ],
+      "derived-inputs": [],
+      "output-handlers": [
+        {
+          "name": "nifti-session-resource",
+          "accepts-command-output": "nifti",
+          "as-a-child-of": "session",
           "type": "Resource",
           "label": "NIFTI"
         }
