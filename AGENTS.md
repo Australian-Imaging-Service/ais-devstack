@@ -163,6 +163,18 @@ appear in `volume.list` (observed 2026-07-15). The CronJob's post-vacuum check
 therefore retries for up to about one minute; an immediate one-shot check can
 false-fail even though the compact revisions advance moments later.
 
+The controlled vacuum orders selected volumes by deleted bytes, largest first,
+so an emergency run restores node headroom as quickly as possible. Keep the
+SeaweedFS deployment at `system-cluster-critical` priority with an `Exists`
+toleration: otherwise kubelet can evict the storage process during disk
+pressure, preventing the vacuum that would resolve the pressure. Do not archive
+very large staged objects with a single S3 `CopyObject`; the client can time out
+after SeaweedFS has already written a partial destination, and retries then
+consume the node with duplicate garbage. For an already verified session whose
+files include multi-gigabyte objects, use the filer's metadata-only `fs.mv` from
+the exact staged prefix to a new `uploaded/<stamp>/<session>` prefix and verify
+the destination logical size before re-enabling ingestion.
+
 ### Manual scanner pull into Orthanc and XNAT
 
 When a Cima3T series was acquired but not sent to Orthanc, pull it from the edge

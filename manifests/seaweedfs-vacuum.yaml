@@ -89,10 +89,15 @@ data:
         if (id == "" || del == 0) next
         if (del >= min_mb * 1048576 || (size > 0 && del / size >= min_ratio)) {
           n += 1; total += del
-          print id
+          # Include deleted bytes so the selected set can be ordered largest
+          # first below. Under disk pressure this reclaims the most space
+          # before spending time compacting small-garbage volumes.
+          print del, id
         }
       }
       END { printf "selected %d volumes, %.1f MiB garbage\n", n, total / 1048576 > "/dev/stderr" }')
+
+    ids=$(echo "$ids" | sort -rn | awk '{ print $2 }')
 
     if [ -z "$ids" ]; then
       echo "no volumes above vacuum threshold (>=${MIN_MB}MiB deleted or ratio>=${MIN_RATIO})"
