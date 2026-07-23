@@ -119,6 +119,14 @@ def run_check(name, fn):
                   + "".join(traceback.format_exc().splitlines(keepends=True)[-8:]))
 
 
+def project_access_request_url(project_id, user_id, level):
+    """Return XNAT's legacy approval form for a user-initiated PAR."""
+    quote = lambda value: urllib.parse.quote(str(value), safe="")
+    return (f"{XNAT_PUBLIC_URL}/app/template/RequestProjectAccessForm.vm"
+            f"/project/{quote(project_id)}/id/{quote(user_id)}"
+            f"/access_level/{quote(level)}")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def http_get(url, headers=None, timeout=30, insecure=False):
@@ -469,11 +477,15 @@ def check_database():
             events.append(f"...and {len(fresh) - 20} more failed workflows (see XNAT admin UI)")
         state["alerted_workflows"] = sorted((alerted & current_ids) | {r[0] for r in fresh})
 
-        # Pending project access requests (persistent conditions: re-alert
-        # daily until approved/denied, recovery notice when handled).
+        # Pending user-initiated project access requests (persistent
+        # conditions: re-alert daily until approved/denied, recovery notice
+        # when handled). XNAT 1.9.3's Access tab filters these rows out because
+        # they have user_id set and email NULL, so include the legacy approval
+        # form URL that XNAT normally sends to project owners by email.
         pars = conn.run(
             """
-            select p.par_id, p.proj_id, p.level, to_char(p.create_date, 'YYYY-MM-DD') as requested,
+            select p.par_id, p.proj_id, p.user_id, p.level,
+                   to_char(p.create_date, 'YYYY-MM-DD') as requested,
                    coalesce(u.login, '?'), coalesce(u.email, '?'),
                    coalesce(u.firstname || ' ' || u.lastname, '?')
             from xs_par_table p
@@ -482,10 +494,13 @@ def check_database():
             order by p.par_id
             """)
         par_lines = []
-        for par_id, proj, level, requested, login, email_, fullname in pars:
+        for par_id, proj, user_id, level, requested, login, email_, fullname in pars:
+            approval_url = project_access_request_url(proj, user_id, level)
             detail = (f"User '{login}' ({fullname}, {email_}) requested '{level}' access "
-                      f"to project '{proj}' on {requested}. Approve or deny it in the "
-                      f"XNAT project's Access tab.")
+                      f"to project '{proj}' on {requested}.\n"
+                      f"Approve or deny (sign in to XNAT first):\n{approval_url}\n"
+                      f"XNAT 1.9.3 does not show user-initiated requests in the "
+                      f"project Access tab.")
             add_issue(f"access-request:{par_id}", detail)
             par_lines.append(f"#{par_id} {login} -> {proj} ({level}) since {requested}")
         digest.append(("Pending access requests",
