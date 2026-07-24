@@ -13,6 +13,8 @@ Checks:
   - XNAT web reachable (in-cluster service and public URL)
   - public TLS certificate expiry
   - Container Service Docker daemon ping
+  - XNAT-to-JupyterHub service authentication and launch policy
+  - stale JupyterHub named servers and unhealthy Jupyter home volumes
   - newly failed XNAT workflows (Postgres wrk_workflowdata)
   - pending project access requests (Postgres xs_par_table)
   - stuck ingest staging prefixes (SeaweedFS filer)
@@ -80,6 +82,7 @@ DISK_CRIT_PCT = float(env("DISK_CRIT_PCT", "90"))
 
 CERT_WARN_DAYS = int(env("CERT_WARN_DAYS", "14"))
 POD_GRACE_MINUTES = int(env("POD_GRACE_MINUTES", "15"))
+JUPYTER_STALE_MINUTES = int(env("JUPYTER_STALE_MINUTES", "20"))
 STAGED_MAX_AGE_HOURS = int(env("STAGED_MAX_AGE_HOURS", "24"))
 REALERT_HOURS = int(env("REALERT_HOURS", "24"))
 XNAT_SESSION_WARN = int(env("XNAT_SESSION_WARN", "500"))
@@ -160,6 +163,12 @@ def parse_k8s_time(value):
     if not value:
         return None
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def parse_iso_time(value):
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def load_state():
@@ -448,6 +457,162 @@ def check_xnat_sessions():
         xnat_logout(cookie)
 
 
+def xnat_preference(cookie, name):
+    _, body = http_get(
+        f"{XNAT_INTERNAL_URL}/xapi/jupyterhub/preferences/{name}",
+        headers=cookie, timeout=30)
+    value = json.loads(body)
+    if isinstance(value, dict):
+        return value.get(name)
+    return value
+
+
+def check_jupyterhub():
+    # Exercise the same service token and API URL used by the XNAT plugin.
+    # A plain unauthenticated Hub health check would miss token drift or a
+    # disabled/missing service identity.
+    cookie = xnat_login()
+    try:
+        api_url = str(xnat_preference(cookie, "jupyterHubApiUrl") or "").rstrip("/")
+        api_token = str(xnat_preference(cookie, "jupyterHubToken") or "")
+        all_users = xnat_preference(cookie, "allUsersCanStartJupyter")
+        max_named = int(xnat_preference(cookie, "maxNamedServers") or 0)
+    finally:
+        xnat_logout(cookie)
+
+    if not api_url or not api_token:
+        add_issue(
+            "jupyterhub-config",
+            "XNAT JupyterHub API URL or service token is not configured.")
+        return
+    if all_users is not True:
+        add_issue(
+            "jupyterhub-all-users",
+            "XNAT JupyterHub preference allUsersCanStartJupyter is not true; "
+            "ordinary users cannot launch notebooks.")
+
+    headers = {"Authorization": f"token {api_token}"}
+    status, _ = http_get(f"{api_url}/info", headers=headers, timeout=30)
+    if status != 200:
+        add_issue(
+            "jupyterhub-service-auth",
+            f"XNAT JupyterHub service credential returned HTTP {status} from {api_url}/info.")
+        return
+
+    _, body = http_get(
+        f"{api_url}/users?include_stopped_servers=1",
+        headers=headers, timeout=30)
+    users = json.loads(body)
+    stale_cutoff = NOW - timedelta(minutes=JUPYTER_STALE_MINUTES)
+    stale = []
+    at_limit = []
+    for user in users:
+        # The named-server limit only counts named servers. JupyterHub omits
+        # stopped servers unless include_stopped_servers is requested, even
+        # though those hidden records still count against the limit.
+        servers = {
+            name: server
+            for name, server in (user.get("servers", {}) or {}).items()
+            if name
+        }
+        blocked = []
+        for server_name, server in servers.items():
+            last_activity = parse_iso_time(server.get("last_activity"))
+            is_old = last_activity is None or last_activity < stale_cutoff
+            is_stopped = server.get("stopped") is True or (
+                not server.get("ready") and not server.get("pending"))
+            is_stalled_spawn = server.get("pending") == "spawn" and is_old
+            if (is_stopped and is_old) or is_stalled_spawn:
+                blocked.append(server_name)
+                stale.append(f"{user['name']}/{server_name}")
+        if max_named and len(servers) >= max_named and blocked:
+            at_limit.append(user["name"])
+
+    if stale:
+        listing = ", ".join(stale[:20])
+        more = f" (+{len(stale) - 20} more)" if len(stale) > 20 else ""
+        add_issue(
+            "jupyterhub-stale-servers",
+            f"JupyterHub has {len(stale)} stopped or stalled named server(s) older than "
+            f"{JUPYTER_STALE_MINUTES} minutes: {listing}{more}. "
+            "These records can consume the per-user named-server limit; remove them "
+            "with the JupyterHub API using DELETE and JSON body {\"remove\": true}.")
+    if at_limit:
+        add_issue(
+            "jupyterhub-users-blocked",
+            "JupyterHub users at the named-server limit because stale servers remain: "
+            + ", ".join(at_limit[:20]))
+
+    digest.append((
+        "JupyterHub",
+        f"service API HTTP {status}; allUsersCanStartJupyter={all_users}; "
+        f"users={len(users)}; stale named servers={len(stale)}"))
+
+
+def check_jupyter_volumes():
+    volumes = k8s_get(
+        "/apis/longhorn.io/v1beta2/namespaces/longhorn-system/volumes").get("items", [])
+    replicas = k8s_get(
+        "/apis/longhorn.io/v1beta2/namespaces/longhorn-system/replicas").get("items", [])
+    replicas_by_volume = {}
+    for replica in replicas:
+        metadata = replica.get("metadata", {})
+        spec = replica.get("spec", {})
+        volume_name = (
+            spec.get("volumeName")
+            or metadata.get("labels", {}).get("longhornvolume"))
+        if volume_name:
+            replicas_by_volume.setdefault(volume_name, []).append(replica)
+    bad = []
+    total = 0
+    cutoff = NOW - timedelta(minutes=JUPYTER_STALE_MINUTES)
+    for volume in volumes:
+        metadata = volume.get("metadata", {})
+        status = volume.get("status", {})
+        k8s = status.get("kubernetesStatus", {}) or {}
+        pvc = k8s.get("pvcName", "")
+        if k8s.get("namespace") != "jupyter" or not pvc.startswith("jupyter-"):
+            continue
+        total += 1
+        created = parse_k8s_time(metadata.get("creationTimestamp"))
+        if created and created >= cutoff:
+            continue
+        robustness = (status.get("robustness") or "unknown").lower()
+        scheduled = next((
+            condition.get("status")
+            for condition in status.get("conditions", []) or []
+            if condition.get("type") == "Scheduled"), None)
+        # Longhorn reports robustness=unknown whenever a healthy volume is
+        # detached. That is normal after JupyterHub culls an idle notebook.
+        # A never-usable home volume is distinguishable because none of its
+        # replicas ever acquired healthyAt (cassidyl's failed first PVC), or
+        # its replicas have failedAt set.
+        volume_replicas = replicas_by_volume.get(metadata.get("name"), [])
+        has_healthy_replica = any(
+            replica.get("spec", {}).get("healthyAt")
+            and not replica.get("spec", {}).get("failedAt")
+            for replica in volume_replicas)
+        unhealthy = (
+            robustness in {"faulted", "degraded"}
+            or scheduled == "False"
+            or (robustness == "unknown" and not has_healthy_replica)
+        )
+        if unhealthy:
+            bad.append(
+                f"{pvc} (volume {metadata.get('name')}, state={status.get('state')}, "
+                f"robustness={robustness}, scheduled={scheduled}, "
+                f"healthyReplica={has_healthy_replica})")
+
+    if bad:
+        add_issue(
+            "jupyterhub-home-volumes",
+            "Unhealthy JupyterHub home volume(s) will prevent notebook pods from starting:\n"
+            + "\n".join(bad[:20]))
+    digest.append((
+        "Jupyter home volumes",
+        f"{total} Longhorn volume(s), {len(bad)} unhealthy"))
+
+
 def check_database():
     conn = pg8000.native.Connection(
         PGUSER, host=PGHOST, port=PGPORT, database=PGDATABASE, password=PGPASSWORD, timeout=30)
@@ -716,6 +881,8 @@ def main():
     run_check("tls-cert", check_tls_cert)
     run_check("container-service", check_container_service)
     run_check("xnat-sessions", check_xnat_sessions)
+    run_check("jupyterhub", check_jupyterhub)
+    run_check("jupyter-volumes", check_jupyter_volumes)
     run_check("database", check_database)
     run_check("ingest-backlog", check_ingest_backlog)
     run_check("db-backup", check_db_backup)
