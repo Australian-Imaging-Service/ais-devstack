@@ -1,6 +1,7 @@
 # Platform monitor
 # Checks disk usage, pod/job/cronjob health, XNAT availability, TLS expiry,
-# Container Service Docker ping, failed XNAT workflows, pending project
+# Container Service Docker ping, XNAT-to-JupyterHub service auth, stale
+# Jupyter named servers/home volumes, failed XNAT workflows, pending project
 # access requests, and stuck ingest staging. Emails alerts for new problems,
 # recovery notices when they clear, 24h re-alerts while they persist, and a
 # daily digest (dead-man's switch) to the address in the
@@ -31,6 +32,9 @@ rules:
     verbs: ["get", "list"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumes", "replicas"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
