@@ -1,0 +1,129 @@
+# Host Docker image prune
+# XNAT Container Service runs jobs on the host Docker daemon (via
+# /var/run/docker.sock). Image updates leave untagged (dangling) layers behind
+# and local plugin/image builds accumulate build cache; nothing else cleans the
+# host Docker storage, which shares the boot volume with everything else.
+#
+# This CronJob prunes ONLY:
+#   * dangling (untagged) images — never tagged images, so pre-pulled Container
+#     Service images (the multi-GB Neurodesk images that would otherwise trip
+#     the Docker-create timeout on first launch) are never removed;
+#   * Docker build cache unused for BUILD_CACHE_UNTIL (default 168h).
+# It deliberately does NOT touch containers: the Container Service can leave
+# orphaned `Created` containers after a create timeout, and removing a
+# just-created container would race an in-flight launch. Clean those manually
+# per AGENTS.md.
+#
+# Talks to the Docker Engine API over the unix socket with the Python stdlib
+# (no docker CLI image needed). DRY_RUN=1 lists what would be pruned.
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/docker-image-prune docker-image-prune-manual-$(date +%s)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docker-image-prune
+  namespace: ais-xnat
+data:
+  prune.py: |
+    import http.client
+    import json
+    import os
+    import socket
+    import sys
+    import urllib.parse
+
+    SOCK = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
+    BUILD_CACHE_UNTIL = os.environ.get("BUILD_CACHE_UNTIL", "168h")
+    DRY_RUN = os.environ.get("DRY_RUN", "0").lower() in {"1", "true", "yes"}
+
+    class UnixHTTPConnection(http.client.HTTPConnection):
+        def __init__(self, path):
+            super().__init__("localhost")
+            self.unix_path = path
+
+        def connect(self):
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(600)
+            s.connect(self.unix_path)
+            self.sock = s
+
+    def docker(method, path, filters=None):
+        query = ""
+        if filters:
+            query = "?filters=" + urllib.parse.quote(json.dumps(filters))
+        conn = UnixHTTPConnection(SOCK)
+        try:
+            conn.request(method, path + query, body=b"" if method == "POST" else None)
+            resp = conn.getresponse()
+            body = resp.read()
+            if resp.status >= 300:
+                raise RuntimeError(f"{method} {path} -> HTTP {resp.status}: {body[:300]!r}")
+            return json.loads(body) if body else {}
+        finally:
+            conn.close()
+
+    def fmt_mb(n):
+        return f"{(n or 0) / 1024 / 1024:.1f} MB"
+
+    dangling = docker("GET", "/images/json", {"dangling": ["true"]})
+    total = sum(i.get("Size", 0) for i in dangling)
+    print(f"dangling images: {len(dangling)} ({fmt_mb(total)})")
+    for i in dangling:
+        print(f"  would prune {i['Id'][:19]} {fmt_mb(i.get('Size', 0))}")
+
+    if DRY_RUN:
+        print(f"DRY-RUN: skipping image prune and build-cache prune (until={BUILD_CACHE_UNTIL})")
+        sys.exit(0)
+
+    result = docker("POST", "/images/prune", {"dangling": ["true"]})
+    deleted = result.get("ImagesDeleted") or []
+    print(f"image prune: deleted {len(deleted)} layers, reclaimed {fmt_mb(result.get('SpaceReclaimed'))}")
+
+    result = docker("POST", "/build/prune", {"until": [BUILD_CACHE_UNTIL]})
+    caches = result.get("CachesDeleted") or []
+    print(f"build-cache prune (until={BUILD_CACHE_UNTIL}): deleted {len(caches)} entries, reclaimed {fmt_mb(result.get('SpaceReclaimed'))}")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: docker-image-prune
+  namespace: ais-xnat
+spec:
+  schedule: "0 7 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: prune
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/prune/prune.py
+              env:
+                - name: BUILD_CACHE_UNTIL
+                  value: "168h"
+                - name: DRY_RUN
+                  value: "0"
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/prune
+                  readOnly: true
+                - name: docker-sock
+                  mountPath: /var/run/docker.sock
+          volumes:
+            - name: script
+              configMap:
+                name: docker-image-prune
+            - name: docker-sock
+              hostPath:
+                path: /var/run/docker.sock
+                type: Socket

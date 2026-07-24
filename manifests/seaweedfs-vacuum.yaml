@@ -10,9 +10,11 @@
 # explicitly by volume id, one at a time, verifying every compact revision
 # before moving on. It also disables the master's periodic automatic vacuum so
 # this CronJob is the only scheduler for the lifetime of the master process.
-# Runs at 5am, after retention, because needle
-# deletions propagate to volume servers asynchronously; garbage not yet visible
-# in volume.list is picked up on the next run.
+# Runs four times a day (05/11/17/23 UTC; the 5am slot stays after the 4am
+# retention) so peak dead-needle space stays bounded to a few hours of ingest
+# churn instead of a full day. Needle deletions propagate to volume servers
+# asynchronously; garbage not yet visible in volume.list is picked up on the
+# next run.
 #
 # `weed shell` bootstraps over master gRPC at port+10000; the seaweedfs Service
 # (applied ad-hoc, not in this repo) must expose 19333 (master-grpc) and 18888
@@ -255,7 +257,7 @@ metadata:
   name: seaweedfs-vacuum
   namespace: seaweedfs
 spec:
-  schedule: "0 5 * * *"
+  schedule: "0 5,11,17,23 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
