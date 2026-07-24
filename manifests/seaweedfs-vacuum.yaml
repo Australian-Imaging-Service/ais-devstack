@@ -1,7 +1,9 @@
 # SeaweedFS volume vacuum
 # Filer-level deletes (e.g. the 4am ingest-uploaded-retention CronJob) only mark
-# needles as deleted; disk space on /data/seaweedfs is reclaimed only when the
-# volumes are compacted. On SeaweedFS 3.99 the threshold sweep
+# needles as deleted; timed-out S3 copies can also leave old volume needles with
+# no filer reference at all. This job first runs volume.fsck against the single
+# filer to mark old orphan needles deleted, then reclaims both kinds of garbage
+# by compacting the volumes. On SeaweedFS 3.99 the threshold sweep
 # `volume.vacuum -garbageThreshold 0.1` skips near-100%-garbage volumes, so this
 # job selects volumes from `volume.list` by observed garbage (deleted bytes >=
 # VACUUM_MIN_DELETED_MB, or garbage ratio >= VACUUM_MIN_RATIO) and vacuums each
@@ -43,6 +45,9 @@ data:
     VERIFY_DELAY="${VACUUM_VERIFY_DELAY_SECONDS:-5}"
     COMMAND_ATTEMPTS="${VACUUM_COMMAND_ATTEMPTS:-3}"
     SHELL_TIMEOUT="${VACUUM_SHELL_TIMEOUT_SECONDS:-900}"
+    ORPHAN_CUTOFF="${SEAWEEDFS_ORPHAN_CUTOFF_TIME_AGO:-24h}"
+    ORPHAN_PROPAGATION_DELAY="${SEAWEEDFS_ORPHAN_PROPAGATION_DELAY_SECONDS:-15}"
+    SKIP_ORPHAN_FSCK="${SEAWEEDFS_SKIP_ORPHAN_FSCK:-0}"
 
     weed_shell() {
       timeout "$SHELL_TIMEOUT" weed shell -master="$MASTER"
@@ -75,18 +80,68 @@ data:
     } | weed_shell
     echo "disabled master automatic vacuum; controlled per-volume vacuum is authoritative"
 
+    pre_list=$(echo volume.list | weed_shell)
+    echo "$pre_list" | grep -q 'volume id:' || { echo "volume.list returned no volumes" >&2; exit 1; }
+    writable_ids=$(echo "$pre_list" | awk '
+      /volume id:/ {
+        id = ""; readonly = 0
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^id:/)            { split($i, a, ":"); id = a[2] }
+          if ($i == "read_only:true") { readonly = 1 }
+        }
+        if (id != "" && !readonly) print id
+      }' | paste -sd, -)
+    [ -n "$writable_ids" ] || { echo "volume.list returned no writable volumes" >&2; exit 1; }
+    read_only_count=$(echo "$pre_list" | grep -c 'read_only:true' || true)
+    echo "orphan fsck scope excludes $read_only_count read-only volume(s)"
+
+    # This deployment has exactly one filer. volume.fsck compares volume
+    # needles with that filer's complete namespace and, with the explicit
+    # flag below, marks only unreferenced needles as deleted. The age cutoff
+    # prevents an in-flight filer update from being classified as orphaned.
+    # Keep lock/unlock in the same weed shell session: administrative commands
+    # silently refuse to run otherwise.
+    if [ "$SKIP_ORPHAN_FSCK" = "1" ]; then
+      echo "skipping orphan fsck by explicit SEAWEEDFS_SKIP_ORPHAN_FSCK=1 override"
+    else
+      echo "marking SeaweedFS orphan needles older than $ORPHAN_CUTOFF"
+      if ! fsck_output=$(
+        { echo lock
+          echo "volume.fsck -volumeId $writable_ids -cutoffTimeAgo $ORPHAN_CUTOFF -reallyDeleteFromVolume"
+          echo unlock
+        } | weed_shell 2>&1
+      ); then
+        echo "$fsck_output" >&2
+        echo "volume.fsck failed or exceeded ${SHELL_TIMEOUT}s" >&2
+        exit 1
+      fi
+      echo "$fsck_output"
+      if echo "$fsck_output" | grep -q 'error:'; then
+        echo "volume.fsck reported an error" >&2
+        exit 1
+      fi
+      echo "$fsck_output" | grep -Eq 'total [0-9]+ directories, [0-9]+ files' || {
+        echo "volume.fsck did not return its required namespace scan summary" >&2
+        exit 1
+      }
+      echo "waiting ${ORPHAN_PROPAGATION_DELAY}s for deleted-byte counts to reach volume.list"
+      sleep "$ORPHAN_PROPAGATION_DELAY"
+    fi
+
     list=$(echo volume.list | weed_shell)
     echo "$list" | grep -q 'volume id:' || { echo "volume.list returned no volumes" >&2; exit 1; }
 
     ids=$(echo "$list" | awk -v min_mb="$MIN_MB" -v min_ratio="$MIN_RATIO" '
       /volume id:/ {
-        id = ""; size = 0; del = 0
+        id = ""; size = 0; del = 0; readonly = 0
         for (i = 1; i <= NF; i++) {
           if ($i ~ /^id:/)                 { split($i, a, ":"); id = a[2] }
           if ($i ~ /^size:/)               { split($i, a, ":"); size = a[2] }
           if ($i ~ /^deleted_byte_count:/) { split($i, a, ":"); del = a[2] }
+          if ($i == "read_only:true")      { readonly = 1 }
         }
         if (id == "" || del == 0) next
+        if (readonly) { readonly_n += 1; readonly_total += del; next }
         if (del >= min_mb * 1048576 || (size > 0 && del / size >= min_ratio)) {
           n += 1; total += del
           # Include deleted bytes so the selected set can be ordered largest
@@ -95,7 +150,10 @@ data:
           print del, id
         }
       }
-      END { printf "selected %d volumes, %.1f MiB garbage\n", n, total / 1048576 > "/dev/stderr" }')
+      END {
+        printf "selected %d volumes, %.1f MiB garbage; skipped %d read-only volumes, %.1f MiB garbage\n",
+          n, total / 1048576, readonly_n, readonly_total / 1048576 > "/dev/stderr"
+      }')
 
     ids=$(echo "$ids" | sort -rn | awk '{ print $2 }')
 
@@ -206,7 +264,7 @@ spec:
       # The script retries only the affected volume. Re-running the complete
       # batch can duplicate successful compactions and obscure the first error.
       backoffLimit: 0
-      activeDeadlineSeconds: 7200
+      activeDeadlineSeconds: 21600
       template:
         spec:
           restartPolicy: Never
