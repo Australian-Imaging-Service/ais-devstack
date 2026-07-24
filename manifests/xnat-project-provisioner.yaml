@@ -204,9 +204,17 @@ data:
         created = False
         if status == 404:
             query = urllib.parse.urlencode({"name": project, "secondary_ID": project})
-            status, _ = xnat_request("PUT", f"/data/projects/{quoted_project}?{query}")
+            status, body = xnat_request("PUT", f"/data/projects/{quoted_project}?{query}")
             if status not in {200, 201}:
-                raise RuntimeError(f"project create returned HTTP {status}")
+                message = re.sub(r"<[^>]+>", " ", body.decode(errors="replace"))
+                message = " ".join(message.split())
+                if "used in a previously deleted project" in message:
+                    raise RuntimeError(
+                        f"project ID is reserved by a previously deleted project (HTTP {status})"
+                    )
+                raise RuntimeError(
+                    f"project create returned HTTP {status}: {message[:300]}"
+                )
             check_status, _ = xnat_request("GET", f"/data/projects/{quoted_project}?format=json")
             if check_status != 200:
                 raise RuntimeError(f"created project is not visible (HTTP {check_status})")
