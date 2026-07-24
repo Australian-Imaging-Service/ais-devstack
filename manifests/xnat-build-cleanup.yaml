@@ -1,0 +1,234 @@
+# XNAT Container Service build-workspace cleanup
+#
+# Container Service leaves per-launch scratch directories under
+# /data/xnat/build/<uuid> after the Docker container is removed. This daily job
+# reuses one XNAT JSESSION, loads every container detail before changing the
+# filesystem, and deletes only UUID workspaces that:
+#   * are referenced by at least one Container Service record;
+#   * are referenced exclusively by terminal records (Complete/Killed/Failed*);
+#   * have had no filesystem changes within RETENTION_HOURS; and
+#   * are real directories directly below the build root (never symlinks).
+# Unreferenced or non-UUID entries are reported and retained for manual review.
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/xnat-build-cleanup xnat-build-cleanup-manual-$(date +%s)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xnat-build-cleanup
+  namespace: ais-xnat
+data:
+  cleanup.py: |
+    import base64
+    import http.cookiejar
+    import json
+    import os
+    import re
+    import shutil
+    import stat
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+    from pathlib import Path, PurePosixPath
+
+    XNAT_URL = os.environ.get(
+        "XNAT_URL", "http://xnat-web.ais-xnat.svc.cluster.local"
+    ).rstrip("/")
+    XNAT_USER = os.environ["XNAT_USER"]
+    XNAT_PASS = os.environ["XNAT_PASS"]
+    BUILD_ROOT = Path(os.environ.get("BUILD_ROOT", "/data/xnat/build"))
+    XNAT_BUILD_ROOT = PurePosixPath(
+        os.environ.get("XNAT_BUILD_ROOT", "/data/xnat/build")
+    )
+    RETENTION_HOURS = int(os.environ.get("RETENTION_HOURS", "24"))
+    DRY_RUN = os.environ.get("DRY_RUN", "0").lower() in {"1", "true", "yes"}
+    UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+
+    def terminal(status_value):
+        value = status_value or ""
+        return value in {"Complete", "Killed"} or value.startswith("Failed")
+
+    auth = base64.b64encode(f"{XNAT_USER}:{XNAT_PASS}".encode()).decode()
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cookie_jar)
+    )
+
+    def request(method, path, use_basic_auth=False, parse_json=True):
+        headers = {}
+        if use_basic_auth:
+            headers["Authorization"] = f"Basic {auth}"
+        req = urllib.request.Request(
+            f"{XNAT_URL}{path}", method=method, headers=headers
+        )
+        try:
+            with opener.open(req, timeout=120) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            sys.stderr.write(
+                f"{method} {path} failed with HTTP {exc.code}: {body[:500]}\n"
+            )
+            raise
+        if not parse_json:
+            return raw.decode()
+        return json.loads(raw.decode() or "null") if raw else None
+
+    def mount_host_path(mount):
+        return mount.get("xnat-host-path") or mount.get("xnat_host_path")
+
+    def workspace_name(host_path):
+        if not host_path:
+            return None
+        path = PurePosixPath(host_path)
+        if path.parent != XNAT_BUILD_ROOT or not UUID_RE.fullmatch(path.name):
+            return None
+        return path.name
+
+    def newest_mtime_and_blocks(root):
+        newest = root.lstat().st_mtime
+        blocks = 0
+        for current, dirs, files in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            for name in dirs + files:
+                path = current_path / name
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue
+                newest = max(newest, info.st_mtime)
+                blocks += info.st_blocks * 512
+        return newest, blocks
+
+    request("POST", "/data/JSESSION", use_basic_auth=True, parse_json=False)
+    try:
+        summaries = request("GET", "/xapi/containers") or []
+        # Fetch all details before deleting anything. If XNAT is unavailable or
+        # one record cannot be read, the run fails closed with no filesystem
+        # changes.
+        details = [
+            request("GET", f"/xapi/containers/{container['id']}")
+            for container in summaries
+        ]
+
+        references = {}
+        for detail in details:
+            status_value = detail.get("status", "")
+            container_id = detail.get("id")
+            for mount in detail.get("mounts", []) or []:
+                name = workspace_name(mount_host_path(mount))
+                if name:
+                    references.setdefault(name, []).append(
+                        (container_id, status_value)
+                    )
+
+        cutoff = time.time() - RETENTION_HOURS * 3600
+        removed = retained_active = retained_young = retained_unreferenced = 0
+        reclaimed = 0
+
+        for path in sorted(BUILD_ROOT.iterdir(), key=lambda item: item.name):
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISDIR(mode) or path.is_symlink() or not UUID_RE.fullmatch(path.name):
+                print(f"RETAIN non-workspace entry {path}")
+                continue
+
+            refs = references.get(path.name)
+            if not refs:
+                print(f"RETAIN unreferenced workspace {path}")
+                retained_unreferenced += 1
+                continue
+            active = [(cid, status_value) for cid, status_value in refs if not terminal(status_value)]
+            if active:
+                print(f"RETAIN active workspace {path}: {active}")
+                retained_active += 1
+                continue
+
+            newest_mtime, blocks = newest_mtime_and_blocks(path)
+            if newest_mtime >= cutoff:
+                age_hours = (time.time() - newest_mtime) / 3600
+                print(f"RETAIN young terminal workspace {path}: age={age_hours:.1f}h refs={refs}")
+                retained_young += 1
+                continue
+
+            if DRY_RUN:
+                print(f"DRY-RUN remove terminal workspace {path}: refs={refs} blocks={blocks}")
+            else:
+                shutil.rmtree(path)
+                print(f"removed terminal workspace {path}: refs={refs} blocks={blocks}")
+            removed += 1
+            reclaimed += blocks
+
+        print(
+            "xnat-build-cleanup summary: "
+            f"removed={removed} reclaimed_bytes={reclaimed} "
+            f"retained_active={retained_active} retained_young={retained_young} "
+            f"retained_unreferenced={retained_unreferenced}"
+            + (" [DRY-RUN]" if DRY_RUN else "")
+        )
+    finally:
+        try:
+            request("DELETE", "/data/JSESSION", parse_json=False)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"Could not close XNAT session cleanly: {exc}\n")
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: xnat-build-cleanup
+  namespace: ais-xnat
+spec:
+  schedule: "30 6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: cleanup
+              image: python:3.12-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/xnat-build-cleanup/cleanup.py
+              env:
+                - name: XNAT_URL
+                  value: "http://xnat-web.ais-xnat.svc.cluster.local"
+                - name: RETENTION_HOURS
+                  value: "24"
+                - name: DRY_RUN
+                  value: "0"
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: username
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: xnat-archiver-creds
+                      key: password
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/xnat-build-cleanup
+                  readOnly: true
+                - name: build
+                  mountPath: /data/xnat/build
+          volumes:
+            - name: script
+              configMap:
+                name: xnat-build-cleanup
+            - name: build
+              persistentVolumeClaim:
+                claimName: pv-xnat-build
