@@ -27,9 +27,14 @@ The installer loads:
   enabled by default for both wrappers.
 - `commands/mriqc-session.json` - `nipreps/mriqc:24.0.2` participant-level
   MRIQC command, enabled site-wide for `xnat:mrSessionData`.
-- `commands/fmriprep-session.json` - `nipreps/fmriprep:25.2.5`
+- `commands/fmriprep-session.json` - local `xnat/fmriprep:25.2.5-ais.2`
   participant-level fMRIPrep command through `xnat2bids`, enabled site-wide for
-  `xnat:mrSessionData`.
+  `xnat:mrSessionData`. Build it before installing the commands with
+  `./scripts/build-fmriprep-image.sh`. The image extends
+  `nipreps/fmriprep:25.2.5` with the public FreeSurfer license embedded by
+  Neurodesk's pinned FreeSurfer recipe. The build verifies the payload checksum
+  and fMRIPrep's own license check; the license text is not stored in this
+  repository.
 - `commands/aslprep-session.json` - `pennlinc/aslprep:26.0.3`
   participant-level ASLPrep command through `xnat2bids`, enabled site-wide for
   `xnat:mrSessionData`.
@@ -49,11 +54,12 @@ MRIQC, fMRIPrep, ASLPrep, QSMxT, and session-level MuscleMap store outputs back
 on the session as resources labeled `MRIQC`, `FMRIPREP`, `ASLPREP`, `QSMXT`,
 and `MUSCLEMAP`. They do not convert raw DICOM into BIDS. Run DICOM to BIDS
 first, or otherwise provide matching scan-level `NIFTI` and `BIDS` resources.
-fMRIPrep and ASLPrep run with `--fs-no-reconall` by default so no FreeSurfer
-license secret is required by these wrappers. QSMxT expects BIDS-compatible QSM
-inputs, typically `part-mag` and `part-phase` `T2starw` files with JSON
-sidecars; it copies the staged BIDS dataset to writable work storage and
-uploads the generated `derivatives`.
+fMRIPrep and ASLPrep run with `--fs-no-reconall` by default. fMRIPrep 25.2.5
+still performs an unconditional FreeSurfer license validation, so its local
+image includes the public license from Neurodesk's FreeSurfer recipe. QSMxT
+expects BIDS-compatible QSM inputs, typically `part-mag` and `part-phase`
+`T2starw` files with JSON sidecars; it copies the staged BIDS dataset to
+writable work storage and uploads the generated `derivatives`.
 
 Scan-level MuscleMap and Spinal Cord Toolbox require scan-level `NIFTI`
 resources. If a `NIFTI` resource contains multiple NIfTI files, the wrappers
