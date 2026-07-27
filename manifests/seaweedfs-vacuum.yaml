@@ -3,7 +3,7 @@
 # needles as deleted; timed-out S3 copies can also leave old volume needles with
 # no filer reference at all. This job first runs volume.fsck against the single
 # filer to mark old orphan needles deleted, then reclaims both kinds of garbage
-# by compacting the volumes. On SeaweedFS 3.99 the threshold sweep
+# by compacting the volumes. On SeaweedFS 3.99/4.00 the threshold sweep
 # `volume.vacuum -garbageThreshold 0.1` skips near-100%-garbage volumes, so this
 # job selects volumes from `volume.list` by observed garbage (deleted bytes >=
 # VACUUM_MIN_DELETED_MB, or garbage ratio >= VACUUM_MIN_RATIO) and vacuums each
@@ -272,7 +272,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: vacuum
-              image: chrislusf/seaweedfs:3.99
+              image: chrislusf/seaweedfs:4.00
               imagePullPolicy: IfNotPresent
               command:
                 - sh
