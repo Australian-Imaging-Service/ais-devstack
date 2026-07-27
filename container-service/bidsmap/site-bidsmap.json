@@ -20,6 +20,10 @@
     "bidsname": "T1w"
   },
   {
+    "series_description": "t1_mprage_sag_p2_iso",
+    "bidsname": "T1w"
+  },
+  {
     "series_description": "t1_mp2rage_sag_0.75iso_UNI-DEN",
     "bidsname": "T1w"
   },
@@ -73,6 +77,14 @@
   },
   {
     "series_description": "BOLD",
+    "bidsname": "task-rest_bold"
+  },
+  {
+    "series_description": "BOLD_rest",
+    "bidsname": "task-rest_bold"
+  },
+  {
+    "series_description": "BOLD_rest_actually",
     "bidsname": "task-rest_bold"
   },
   {
