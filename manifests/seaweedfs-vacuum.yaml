@@ -118,7 +118,15 @@ data:
         exit 1
       fi
       echo "$fsck_output"
-      if echo "$fsck_output" | grep -q 'error:'; then
+      # SeaweedFS 4.00 can race its lock-renew goroutine against `unlock` in
+      # the preceding short shell session. The next `lock` then prints one or
+      # more acquisition retries while it waits for the 10-second lease to
+      # expire, but volume.fsck subsequently runs normally. Ignore only that
+      # exact retry; keep treating every command/purge error as fatal.
+      fsck_errors=$(echo "$fsck_output" | grep 'error:' | \
+        grep -vF 'lock: rpc error: code = Unknown desc = already locked by' || true)
+      if [ -n "$fsck_errors" ]; then
+        echo "$fsck_errors" >&2
         echo "volume.fsck reported an error" >&2
         exit 1
       fi
