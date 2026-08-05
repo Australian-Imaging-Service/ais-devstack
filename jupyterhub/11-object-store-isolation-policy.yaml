@@ -1,0 +1,41 @@
+# Prevent a JupyterHub configuration regression from exposing host data to a
+# single-user notebook. User pods may bind only an object-store project or one
+# object-store session; the Hub control plane may retain its read-only index.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: jupyter-object-store-isolation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: jupyter-singleuser-pod
+      expression: >-
+        object.metadata.namespace == 'jupyter' &&
+        has(object.metadata.labels) &&
+        'component' in object.metadata.labels &&
+        object.metadata.labels['component'] == 'singleuser-server'
+  validations:
+    - expression: >-
+        object.spec.volumes.all(volume,
+          !has(volume.hostPath) ||
+          volume.hostPath.path.matches(
+            '^/srv/xnat-local-storage/gpfs/object-store/sessions/[^/]+(/[^/]+)?$'
+          )
+        )
+      message: >-
+        Jupyter single-user pods may use hostPath only for an exact XNAT
+        object-store project or session scope; global host mounts are forbidden.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: jupyter-object-store-isolation
+spec:
+  policyName: jupyter-object-store-isolation
+  validationActions: [Deny]
