@@ -129,11 +129,22 @@ hub:
     - name: xnat-mount-mapping
       configMap:
         name: xnat-mount-mapping
+    # The Hub uses this read-only index to determine whether an authorized
+    # XNAT session has offloaded files. Single-user pods never receive this
+    # global mount; they receive only exact per-session hostPath mounts.
+    - name: xnat-object-store-index
+      hostPath:
+        path: /srv/xnat-local-storage/gpfs/object-store
+        type: Directory
 
   extraVolumeMounts:
     - name: xnat-mount-mapping
       mountPath: /etc/jupyterhub/xnat-mount-mapping
       readOnly: true
+    - name: xnat-object-store-index
+      mountPath: /srv/xnat-object-store-index
+      readOnly: true
+      mountPropagation: HostToContainer
 
   extraConfig:
     00_set_crypt_key: |
@@ -314,7 +325,9 @@ hub:
       UserServerAPIHandler.delete = server_delete_wrapper
 
     03_xnat_pre_spawn_hook: |
+      import hashlib
       import json
+      import os
 
       # Load XNAT archive path -> NFS subPath mapping from ConfigMap
       # This translates XNAT container-internal paths to actual NFS paths
@@ -348,6 +361,34 @@ hub:
                   return f"{nfs_subpath}/{remainder}", True
           # Fallback: strip /data/xnat/ prefix (legacy behavior, likely wrong)
           return source[len('/data/xnat/'):], False
+
+      _XNAT_OBJECT_STORE_INDEX = '/srv/xnat-object-store-index'
+      _XNAT_OBJECT_STORE_HOST = '/srv/xnat-local-storage/gpfs/object-store'
+
+      def _object_store_session_scope(archive_subpath):
+          """Return the narrowest object-store scope matching an archive mount."""
+          raw_parts = archive_subpath.strip('/').split('/')
+          if any(part in ('', '.', '..') for part in raw_parts):
+              return None
+          # Archive layout: archive/<project>/<arc>/<session>/...
+          if len(raw_parts) < 2 or raw_parts[0] != 'archive':
+              return None
+
+          project = raw_parts[1]
+          if len(raw_parts) >= 4:
+              relative_path = f'sessions/{project}/{raw_parts[3]}'
+          else:
+              # A project/arc-level XNAT task already exposes that project's
+              # archive, so give it only the matching object-store project.
+              relative_path = f'sessions/{project}'
+          index_path = os.path.join(_XNAT_OBJECT_STORE_INDEX, relative_path)
+          if not os.path.isdir(index_path):
+              return None
+
+          volume_name = 'xnat-object-' + hashlib.sha256(
+              relative_path.encode('utf-8')
+          ).hexdigest()[:16]
+          return volume_name, relative_path
 
       async def pre_spawn_hook(spawner):
           import requests
@@ -408,18 +449,11 @@ hub:
 
           xnat_volumes = [
               {'name': 'xnat-gpfs', 'persistentVolumeClaim': {'claimName': 'xnat-gpfs'}},
-              {'name': 'xnat-object-store', 'hostPath': {'path': '/srv/xnat-local-storage/gpfs/object-store', 'type': 'Directory'}},
               {'name': 'shm', 'emptyDir': {'medium': 'Memory', 'sizeLimit': '2Gi'}}
           ]
 
           xnat_mounts = [
-              {'name': 'shm', 'mountPath': '/dev/shm'},
-              {
-                  'name': 'xnat-object-store',
-                  'mountPath': '/data/xnat/object-store',
-                  'readOnly': True,
-                  'mountPropagation': 'HostToContainer'
-              }
+              {'name': 'shm', 'mountPath': '/dev/shm'}
           ]
 
           spawner.volumes = existing_volumes + xnat_volumes
@@ -489,6 +523,7 @@ hub:
 
           launch_dir = server_root
           data_mount_targets = []
+          object_store_sessions = set()
 
           spawner.volume_mounts.extend(workspace_mounts)
 
@@ -575,6 +610,28 @@ hub:
                           'readOnly': read_only
                       }
                       spawner.volume_mounts.append(xnat_mount)
+
+                      object_store_scope = _object_store_session_scope(subpath)
+                      if object_store_scope:
+                          volume_name, relative_path = object_store_scope
+                          if relative_path not in object_store_sessions:
+                              object_store_sessions.add(relative_path)
+                              spawner.volumes.append({
+                                  'name': volume_name,
+                                  'hostPath': {
+                                      'path': os.path.join(_XNAT_OBJECT_STORE_HOST, relative_path),
+                                      'type': 'Directory'
+                                  }
+                              })
+                              spawner.volume_mounts.append({
+                                  'name': volume_name,
+                                  'mountPath': f'/data/xnat/object-store/{relative_path}',
+                                  'readOnly': True,
+                                  'mountPropagation': 'HostToContainer'
+                              })
+                              spawner.log.info(
+                                  f"Scoped object-store access to '{relative_path}'"
+                              )
                       if target:
                           home_target = _home_xnat_mount_target(target)
                           if home_target:
