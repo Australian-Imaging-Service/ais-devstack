@@ -17,6 +17,7 @@ Checks:
   - stale JupyterHub named servers and unhealthy Jupyter home volumes
   - newly failed XNAT workflows (Postgres wrk_workflowdata)
   - pending project access requests (Postgres xs_par_table)
+  - edge ingest heartbeats, blocked raw uploads, and fallback DICOM routing
   - stuck ingest staging prefixes (SeaweedFS filer)
   - nightly Postgres dump freshness in GCS (via the object-store FUSE mount)
 
@@ -68,6 +69,10 @@ PGPASSWORD = env("PGPASSWORD")
 
 FILER_URL = env("FILER_URL", "http://seaweedfs.seaweedfs.svc.cluster.local:8888").rstrip("/")
 INGEST_BUCKET = env("INGEST_BUCKET", "/buckets/ingest-bucket")
+EXPECTED_EDGES = [edge.strip() for edge in env(
+    "EXPECTED_EDGES", "edge-rsl60"
+).split(",") if edge.strip()]
+EDGE_HEALTH_MAX_AGE_MINUTES = int(env("EDGE_HEALTH_MAX_AGE_MINUTES", "10"))
 
 K8S_NAMESPACES = [ns.strip() for ns in env(
     "K8S_NAMESPACES", "ais-xnat,xnat-upload,jupyter,seaweedfs,ingress-nginx,cert-manager"
@@ -406,55 +411,48 @@ def xnat_logout(cookie):
         pass
 
 
-def check_container_service():
-    cookie = xnat_login()
-    try:
-        status, body = http_get(f"{XNAT_INTERNAL_URL}/xapi/docker/server",
-                                headers=cookie, timeout=30)
-        info = json.loads(body)
-        if info.get("ping") is not True:
-            add_issue("container-service",
-                      f"Container Service Docker ping failed: {json.dumps(info)[:300]}")
-    finally:
-        xnat_logout(cookie)
+def check_container_service(cookie):
+    status, body = http_get(f"{XNAT_INTERNAL_URL}/xapi/docker/server",
+                            headers=cookie, timeout=30)
+    info = json.loads(body)
+    if info.get("ping") is not True:
+        add_issue("container-service",
+                  f"Container Service Docker ping failed: {json.dumps(info)[:300]}")
 
 
-def check_xnat_sessions():
+def check_xnat_sessions(cookie):
     # Early warning for server-side session pileup (a REST script that leaks
     # sessions via per-request Basic auth). At concurrentMaxSessions (default
     # 1000) XNAT 401-locks the account even with correct credentials; alert
-    # well before that. Recovery: DELETE /xapi/users/active/<user> (any admin)
-    # invalidates the piled-up sessions immediately.
-    cookie = xnat_login()
-    try:
-        counts = []
-        for user in XNAT_SESSION_USERS:
+    # well before that. Recovery on this deployment is an xnat-web restart,
+    # because there is no second site administrator available to invalidate
+    # the locked admin user's sessions through the API.
+    counts = []
+    for user in XNAT_SESSION_USERS:
+        try:
+            status, body = http_get(
+                f"{XNAT_INTERNAL_URL}/xapi/users/active/{user}",
+                headers=cookie, timeout=30)
             try:
-                status, body = http_get(
-                    f"{XNAT_INTERNAL_URL}/xapi/users/active/{user}",
-                    headers=cookie, timeout=30)
-                try:
-                    n = len(json.loads(body))
-                except ValueError:
-                    n = 0
-            except urllib.error.HTTPError as exc:
-                # XNAT answers 304 (not an empty list) when the user has no
-                # active sessions.
-                if exc.code != 304:
-                    raise
+                n = len(json.loads(body))
+            except ValueError:
                 n = 0
-            counts.append(f"{user}={n}")
-            if n > XNAT_SESSION_WARN:
-                add_issue(
-                    f"xnat-sessions:{user}",
-                    f"XNAT user '{user}' has {n} active server-side sessions "
-                    f"(warn >{XNAT_SESSION_WARN}; XNAT rejects logins at "
-                    f"concurrentMaxSessions) — a REST script is likely "
-                    f"leaking sessions via per-request Basic auth. Clear with "
-                    f"DELETE /xapi/users/active/{user}.")
-        digest.append(("XNAT active sessions", ", ".join(counts)))
-    finally:
-        xnat_logout(cookie)
+        except urllib.error.HTTPError as exc:
+            # XNAT answers 304 (not an empty list) when the user has no
+            # active sessions.
+            if exc.code != 304:
+                raise
+            n = 0
+        counts.append(f"{user}={n}")
+        if n > XNAT_SESSION_WARN:
+            add_issue(
+                f"xnat-sessions:{user}",
+                f"XNAT user '{user}' has {n} active server-side sessions "
+                f"(warn >{XNAT_SESSION_WARN}; XNAT rejects logins at "
+                f"concurrentMaxSessions) — a REST script is likely "
+                f"leaking sessions via per-request Basic auth. Fix the client, "
+                f"then restart statefulset/xnat-web to clear Tomcat's sessions.")
+    digest.append(("XNAT active sessions", ", ".join(counts)))
 
 
 def xnat_preference(cookie, name):
@@ -467,18 +465,14 @@ def xnat_preference(cookie, name):
     return value
 
 
-def check_jupyterhub():
+def check_jupyterhub(cookie):
     # Exercise the same service token and API URL used by the XNAT plugin.
     # A plain unauthenticated Hub health check would miss token drift or a
     # disabled/missing service identity.
-    cookie = xnat_login()
-    try:
-        api_url = str(xnat_preference(cookie, "jupyterHubApiUrl") or "").rstrip("/")
-        api_token = str(xnat_preference(cookie, "jupyterHubToken") or "")
-        all_users = xnat_preference(cookie, "allUsersCanStartJupyter")
-        max_named = int(xnat_preference(cookie, "maxNamedServers") or 0)
-    finally:
-        xnat_logout(cookie)
+    api_url = str(xnat_preference(cookie, "jupyterHubApiUrl") or "").rstrip("/")
+    api_token = str(xnat_preference(cookie, "jupyterHubToken") or "")
+    all_users = xnat_preference(cookie, "allUsersCanStartJupyter")
+    max_named = int(xnat_preference(cookie, "maxNamedServers") or 0)
 
     if not api_url or not api_token:
         add_issue(
@@ -547,6 +541,31 @@ def check_jupyterhub():
         "JupyterHub",
         f"service API HTTP {status}; allUsersCanStartJupyter={all_users}; "
         f"users={len(users)}; stale named servers={len(stale)}"))
+
+
+def check_xnat_authenticated_services():
+    """Use one XNAT JSESSION for every authenticated monitor check."""
+    try:
+        cookie = xnat_login()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            add_issue(
+                "xnat-auth",
+                "XNAT rejected the monitor admin login with HTTP 401. If the "
+                "credentials have not changed and failed_login_attempts is zero, "
+                "the account has probably reached XNAT's 1,000 concurrent-session "
+                "ceiling. Find and fix the REST client leaking HTTP-Basic sessions, "
+                "then restart statefulset/xnat-web to clear Tomcat's session cache."
+            )
+            return
+        raise
+
+    try:
+        run_check("container-service", lambda: check_container_service(cookie))
+        run_check("xnat-sessions", lambda: check_xnat_sessions(cookie))
+        run_check("jupyterhub", lambda: check_jupyterhub(cookie))
+    finally:
+        xnat_logout(cookie)
 
 
 def check_jupyter_volumes():
@@ -691,6 +710,12 @@ def filer_ls(path):
         return json.load(resp).get("Entries") or []
 
 
+def filer_read(path):
+    url = f"{FILER_URL}{urllib.parse.quote(path)}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        return resp.read()
+
+
 def filer_is_dir(entry):
     return bool(entry.get("Mode", 0) & 0x80000000)
 
@@ -712,8 +737,18 @@ def check_ingest_backlog():
     counts = {}
     for prefix in ("staged", "incoming"):
         entries = filer_ls(f"{INGEST_BUCKET}/{prefix}/")
-        counts[prefix] = len(entries)
+        candidates = []
         for entry in entries:
+            # Edge uploads are published as incoming/<edge>/<session>. Age
+            # the session, not the long-lived edge directory: otherwise any
+            # new upload beneath an old edge prefix is reported as >24h old.
+            if prefix == "incoming" and filer_is_dir(entry):
+                children = filer_ls(entry["FullPath"].rstrip("/") + "/")
+                candidates.extend(children)
+            else:
+                candidates.append(entry)
+        counts[prefix] = len(candidates)
+        for entry in candidates:
             name = entry["FullPath"].rsplit("/", 1)[-1]
             if name.startswith("."):
                 continue
@@ -723,7 +758,8 @@ def check_ingest_backlog():
             except (TypeError, ValueError):
                 continue
             if modified < cutoff and filer_is_dir(entry) and filer_subtree_has_files(entry["FullPath"]):
-                stuck.append(f"{prefix}/{name} (untouched since {modified:%Y-%m-%d %H:%M}Z)")
+                display_path = entry["FullPath"].removeprefix(INGEST_BUCKET + "/")
+                stuck.append(f"{display_path} (untouched since {modified:%Y-%m-%d %H:%M}Z)")
     try:
         counts["uploaded"] = len(filer_ls(f"{INGEST_BUCKET}/uploaded/"))
     except Exception:
@@ -736,6 +772,114 @@ def check_ingest_backlog():
                   f"{len(stuck)} ingest prefix(es) with files older than "
                   f"{STAGED_MAX_AGE_HOURS}h not uploaded to XNAT:\n{listing}{more}\n"
                   f"Check the xnat-upload/xnat-ingest-upload pod logs.")
+
+
+def check_edge_ingest_health():
+    max_age = timedelta(minutes=EDGE_HEALTH_MAX_AGE_MINUTES)
+    summary = []
+    object_names = (
+        "edge-ingest-auto-label-health.json",
+        "edge-ingest-samba-health.json",
+    )
+
+    for edge in EXPECTED_EDGES:
+        edge_rows = []
+        for object_name in object_names:
+            component = object_name.removeprefix("edge-ingest-").removesuffix("-health.json")
+            path = f"{INGEST_BUCKET}/health/{edge}/{object_name}"
+            try:
+                payload = json.loads(filer_read(path))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    add_issue(
+                        f"edge-health-missing:{edge}:{component}",
+                        f"Edge {edge} has not published its {component} ingest heartbeat. "
+                        "Blocked or misrouted data can be silent while this heartbeat is missing."
+                    )
+                    edge_rows.append(f"{component}: missing")
+                    continue
+                raise
+
+            updated = parse_iso_time(payload.get("updated"))
+            if updated is None:
+                add_issue(
+                    f"edge-health-invalid:{edge}:{component}",
+                    f"Edge {edge} published an invalid {component} ingest heartbeat "
+                    f"without a parseable updated timestamp."
+                )
+                edge_rows.append(f"{component}: invalid")
+                continue
+            updated = updated.astimezone(timezone.utc)
+            age = NOW - updated
+            if age > max_age:
+                add_issue(
+                    f"edge-health-stale:{edge}:{component}",
+                    f"Edge {edge} {component} ingest heartbeat is {age} old "
+                    f"(maximum {EDGE_HEALTH_MAX_AGE_MINUTES} minutes). "
+                    "The edge sorter or health publication path may be down."
+                )
+
+            blocked_uploads = payload.get("blocked_uploads") or []
+            failed_uploads = payload.get("failed_uploads") or []
+            fallback_studies = payload.get("fallback_studies") or []
+            blocked_studies = payload.get("blocked_studies") or []
+            edge_rows.append(
+                f"{component}: age {int(max(age.total_seconds(), 0))}s, "
+                f"{len(blocked_uploads)} blocked raw, {len(failed_uploads)} failed raw, "
+                f"{len(fallback_studies)} fallback DICOM, {len(blocked_studies)} blocked DICOM"
+            )
+
+            for item in blocked_uploads:
+                group = str(item.get("group", "?"))
+                project = str(item.get("project", "?"))
+                subject = str(item.get("subject", "?"))
+                add_issue(
+                    f"edge-raw-blocked:{edge}:{group}:{project}:{subject}",
+                    f"Raw upload is blocked on {edge}: {group}/{project}/{subject} "
+                    f"({item.get('files', '?')} files, "
+                    f"{float(item.get('bytes', 0)) / 1e9:.2f} GB).\n"
+                    f"Reason: {item.get('reason', 'project is not admitted')}.\n"
+                    "Add the intended project to the edge allow-list or send a correctly "
+                    "routed DICOM study for that project; the source data remains on the edge."
+                )
+
+            for item in failed_uploads:
+                group = str(item.get("group", "?"))
+                project = str(item.get("project", "?"))
+                subject = str(item.get("subject", "?"))
+                add_issue(
+                    f"edge-raw-failed:{edge}:{group}:{project}:{subject}",
+                    f"Raw upload staging failed on {edge}: {group}/{project}/{subject}.\n"
+                    f"Error: {item.get('message', 'unknown error')}\n"
+                    "The source data was preserved for retry."
+                )
+
+            for item in fallback_studies:
+                study = str(item.get("study", "?"))
+                value = str(item.get("value", "")) or "(empty)"
+                target = str(item.get("target_project", "misc"))
+                add_issue(
+                    f"edge-dicom-fallback:{edge}:{study}",
+                    f"DICOM study {study} on {edge} has unroutable "
+                    f"{item.get('field', 'PatientID')} '{value}' and will be sent to "
+                    f"fallback project '{target}'.\n"
+                    "If the operator aborted a send, corrected the scanner ID, and resent, "
+                    "check for reused SOP Instance UIDs: Orthanc may have retained the first "
+                    "copy unless OverwriteInstances is enabled."
+                )
+
+            for item in blocked_studies:
+                study = str(item.get("study", "?"))
+                project = str(item.get("project", "?"))
+                add_issue(
+                    f"edge-dicom-blocked:{edge}:{study}",
+                    f"DICOM study {study} on {edge} is blocked from ingestion "
+                    f"(project '{project}').\nReason: {item.get('reason', 'routing rejected')}."
+                )
+
+        summary.append(f"{edge}: " + "; ".join(edge_rows))
+
+    digest.append(("Edge ingest health", "\n".join(summary) if summary else "no edges configured"))
 
 
 def check_db_backup():
@@ -879,11 +1023,10 @@ def main():
     run_check("jobs", check_jobs)
     run_check("xnat-web", check_xnat_web)
     run_check("tls-cert", check_tls_cert)
-    run_check("container-service", check_container_service)
-    run_check("xnat-sessions", check_xnat_sessions)
-    run_check("jupyterhub", check_jupyterhub)
+    run_check("xnat-authenticated-services", check_xnat_authenticated_services)
     run_check("jupyter-volumes", check_jupyter_volumes)
     run_check("database", check_database)
+    run_check("edge-ingest-health", check_edge_ingest_health)
     run_check("ingest-backlog", check_ingest_backlog)
     run_check("db-backup", check_db_backup)
 
