@@ -2,7 +2,8 @@
 # Checks disk usage, pod/job/cronjob health, XNAT availability, TLS expiry,
 # Container Service Docker ping, XNAT-to-JupyterHub service auth, stale
 # Jupyter named servers/home volumes, failed XNAT workflows, pending project
-# access requests, and stuck ingest staging. Emails alerts for new problems,
+# access requests, edge ingest heartbeats/routing failures, and stuck ingest
+# staging. Emails alerts for new problems,
 # recovery notices when they clear, 24h re-alerts while they persist, and a
 # daily digest (dead-man's switch) to the address in the
 # platform-monitor-smtp secret.
@@ -99,6 +100,10 @@ spec:
                   value: "America/Los_Angeles"
                 - name: DIGEST_HOUR
                   value: "8"
+                - name: EXPECTED_EDGES
+                  value: "edge-rsl60"
+                - name: EDGE_HEALTH_MAX_AGE_MINUTES
+                  value: "10"
               volumeMounts:
                 - name: host-root
                   mountPath: /host
