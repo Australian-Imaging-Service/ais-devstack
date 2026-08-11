@@ -899,7 +899,7 @@ data:
         FILEFORMATS_AVAILABLE = False
 
     DEFAULT_PORT = 5050
-    ALLOWED_PATHS = ['/workspace', '/home/jovyan', '/neurodesktop-storage', '/data', '/tmp', str(Path.home())]
+    ALLOWED_PATHS = ['/workspace', '/home/jovyan', '/neurodesktop-storage', '/data', '/tmp']
 
     # Global state
     xnat_session = None
@@ -1032,7 +1032,14 @@ data:
             for item in sorted(full_path.iterdir()):
                 if item.name.startswith('.'):
                     continue
-                info = {'name': item.name, 'path': str(item), 'type': 'directory' if item.is_dir() else 'file'}
+                # In relative (Home) mode return paths relative to home so the client
+                # keeps a consistent relative view; only absolute mode returns full paths.
+                # Fall back to the absolute path if the item is somehow outside home.
+                try:
+                    item_path = str(item) if absolute else str(item.relative_to(Path.home()))
+                except ValueError:
+                    item_path = str(item)
+                info = {'name': item.name, 'path': item_path, 'type': 'directory' if item.is_dir() else 'file'}
                 if item.is_file():
                     try:
                         info['size'] = item.stat().st_size

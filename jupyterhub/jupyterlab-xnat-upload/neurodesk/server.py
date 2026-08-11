@@ -40,7 +40,6 @@ ALLOWED_PATHS = [
     '/neurodesktop-storage',
     '/data',
     '/tmp',
-    str(Path.home()),
 ]
 
 # Global uploader instance
@@ -242,9 +241,16 @@ class XNATUploadHandler(BaseHTTPRequestHandler):
                 if item.name.startswith('.'):
                     continue
 
+                # In relative (Home) mode return paths relative to home so the client
+                # keeps a consistent relative view; only absolute mode returns full paths.
+                # Fall back to the absolute path if the item is somehow outside home.
+                try:
+                    item_path = str(item) if absolute else str(item.relative_to(Path.home()))
+                except ValueError:
+                    item_path = str(item)
                 file_info = {
                     'name': item.name,
-                    'path': str(item),
+                    'path': item_path,
                     'type': 'directory' if item.is_dir() else 'file'
                 }
 
