@@ -104,6 +104,16 @@ spec:
                   value: "edge-rsl60"
                 - name: EDGE_HEALTH_MAX_AGE_MINUTES
                   value: "10"
+                - name: REIMPORT_PENDING_MAX_MINUTES
+                  value: "45"
+                - name: REIMPORT_READY_MAX_MINUTES
+                  value: "10"
+                - name: REIMPORT_STATE_RESET_ALERT_HOURS
+                  value: "24"
+                # A completed ingest normally clears in minutes. Two hours
+                # catches a failed re-import without waiting a full day.
+                - name: STAGED_MAX_AGE_HOURS
+                  value: "2"
               volumeMounts:
                 - name: host-root
                   mountPath: /host

@@ -17,7 +17,7 @@ Checks:
   - stale JupyterHub named servers and unhealthy Jupyter home volumes
   - newly failed XNAT workflows (Postgres wrk_workflowdata)
   - pending project access requests (Postgres xs_par_table)
-  - edge ingest heartbeats, blocked raw uploads, and fallback DICOM routing
+  - edge ingest heartbeats, blocked routing, and delayed DICOM re-imports
   - stuck ingest staging prefixes (SeaweedFS filer)
   - nightly Postgres dump freshness in GCS (via the object-store FUSE mount)
 
@@ -73,6 +73,9 @@ EXPECTED_EDGES = [edge.strip() for edge in env(
     "EXPECTED_EDGES", "edge-rsl60"
 ).split(",") if edge.strip()]
 EDGE_HEALTH_MAX_AGE_MINUTES = int(env("EDGE_HEALTH_MAX_AGE_MINUTES", "10"))
+REIMPORT_PENDING_MAX_MINUTES = int(env("REIMPORT_PENDING_MAX_MINUTES", "45"))
+REIMPORT_READY_MAX_MINUTES = int(env("REIMPORT_READY_MAX_MINUTES", "10"))
+REIMPORT_STATE_RESET_ALERT_HOURS = int(env("REIMPORT_STATE_RESET_ALERT_HOURS", "24"))
 
 K8S_NAMESPACES = [ns.strip() for ns in env(
     "K8S_NAMESPACES", "ais-xnat,xnat-upload,jupyter,seaweedfs,ingress-nginx,cert-manager"
@@ -823,11 +826,77 @@ def check_edge_ingest_health():
             failed_uploads = payload.get("failed_uploads") or []
             fallback_studies = payload.get("fallback_studies") or []
             blocked_studies = payload.get("blocked_studies") or []
+            reimport_pending = payload.get("reimport_pending") or []
+            reimport_ready = payload.get("reimport_ready") or []
+            last_state_reset = payload.get("last_state_reset")
             edge_rows.append(
                 f"{component}: age {int(max(age.total_seconds(), 0))}s, "
                 f"{len(blocked_uploads)} blocked raw, {len(failed_uploads)} failed raw, "
-                f"{len(fallback_studies)} fallback DICOM, {len(blocked_studies)} blocked DICOM"
+                f"{len(fallback_studies)} fallback DICOM, {len(blocked_studies)} blocked DICOM, "
+                f"{len(reimport_pending)} re-import pending, "
+                f"{len(reimport_ready)} re-import ready"
             )
+
+            for item in reimport_pending:
+                study = str(item.get("study", "?"))
+                since = parse_iso_time(item.get("since"))
+                if since is None:
+                    add_issue(
+                        f"edge-reimport-pending-invalid:{edge}:{study}",
+                        f"DICOM re-import state for study {study} on {edge} has no valid "
+                        "stable-since timestamp. Check the edge auto-label state file."
+                    )
+                    continue
+                pending_age = NOW - since.astimezone(timezone.utc)
+                if pending_age > timedelta(minutes=REIMPORT_PENDING_MAX_MINUTES):
+                    add_issue(
+                        f"edge-reimport-pending:{edge}:{study}",
+                        f"DICOM study {study} on {edge} has had a stable changed snapshot "
+                        f"for {pending_age} (maximum "
+                        f"{REIMPORT_PENDING_MAX_MINUTES} minutes).\n"
+                        "The sorter did not restore xnat-ingest-ready. Check the edge "
+                        "sorter logs, Orthanc labels, and the auto-label state file."
+                    )
+
+            for item in reimport_ready:
+                study = str(item.get("study", "?"))
+                since = parse_iso_time(item.get("since"))
+                if since is None:
+                    add_issue(
+                        f"edge-reimport-ready-invalid:{edge}:{study}",
+                        f"DICOM re-import state for study {study} on {edge} has no valid "
+                        "ready-since timestamp. Check the edge auto-label state file."
+                    )
+                    continue
+                ready_age = NOW - since.astimezone(timezone.utc)
+                if ready_age > timedelta(minutes=REIMPORT_READY_MAX_MINUTES):
+                    add_issue(
+                        f"edge-reimport-ready:{edge}:{study}",
+                        f"DICOM study {study} on {edge} has remained ready for re-import "
+                        f"for {ready_age} (maximum {REIMPORT_READY_MAX_MINUTES} minutes).\n"
+                        "The sorter did not confirm staging. Check the Orthanc labels, edge "
+                        "sorter logs, and local staging directory."
+                    )
+
+            if last_state_reset:
+                reset_at = parse_iso_time(last_state_reset.get("at"))
+                if reset_at is None:
+                    add_issue(
+                        f"edge-reimport-state-reset-invalid:{edge}",
+                        f"Edge {edge} reported an auto-label state reset without a valid "
+                        "timestamp. Check the edge auto-label health payload."
+                    )
+                else:
+                    reset_age = NOW - reset_at.astimezone(timezone.utc)
+                    if reset_age <= timedelta(hours=REIMPORT_STATE_RESET_ALERT_HOURS):
+                        add_issue(
+                            f"edge-reimport-state-reset:{edge}",
+                            f"Edge {edge} reset its DICOM auto-label state {reset_age} ago.\n"
+                            f"Reason: {last_state_reset.get('message', 'unknown error')}\n"
+                            "Existing skipped studies were baselined again. Check the state "
+                            "file and audit Orthanc against XNAT for changes that arrived "
+                            "before the reset."
+                        )
 
             for item in blocked_uploads:
                 group = str(item.get("group", "?"))
