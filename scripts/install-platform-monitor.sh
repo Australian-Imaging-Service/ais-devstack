@@ -16,6 +16,12 @@ SMTP_USERNAME="${SMTP_USERNAME:-mail.neurodesk@gmail.com}"
 ALERT_TO="${ALERT_TO:-$SMTP_USERNAME}"
 IMAGE_NAME="${IMAGE_NAME:-xnat-platform-monitor:latest}"
 
+if docker info >/dev/null 2>&1; then
+    DOCKER=(docker)
+else
+    DOCKER=(sudo docker)
+fi
+
 # ── SMTP secret ─────────────────────────────────────────────────────
 if [ -z "${SMTP_PASSWORD:-}" ]; then
     if $KUBECTL -n ais-xnat get secret platform-monitor-smtp &>/dev/null; then
@@ -36,8 +42,8 @@ if [ -n "${SMTP_PASSWORD:-}" ]; then
 fi
 
 # ── Image ───────────────────────────────────────────────────────────
-docker build -t "$IMAGE_NAME" "$BASE_DIR/monitoring/"
-docker save "$IMAGE_NAME" | sudo k3s ctr images import -
+"${DOCKER[@]}" build -t "$IMAGE_NAME" "$BASE_DIR/monitoring/"
+"${DOCKER[@]}" save "$IMAGE_NAME" | sudo k3s ctr images import -
 
 # ── Deploy ──────────────────────────────────────────────────────────
 $KUBECTL apply -f "$BASE_DIR/manifests/platform-monitor.yaml"
