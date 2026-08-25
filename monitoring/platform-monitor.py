@@ -179,6 +179,13 @@ def parse_iso_time(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def is_job_owned(pod):
+    return any(
+        owner.get("kind") == "Job"
+        for owner in pod.get("metadata", {}).get("ownerReferences", []) or []
+    )
+
+
 def load_state():
     try:
         with open(STATE_FILE) as fh:
@@ -241,7 +248,12 @@ def check_pods():
             phase = pod.get("status", {}).get("phase")
             created = parse_k8s_time(pod["metadata"].get("creationTimestamp"))
             age = NOW - created if created else timedelta(0)
-            if pod["metadata"].get("deletionTimestamp") or phase == "Succeeded":
+            # Terminal Job pods are represented by their owning Job/CronJob and
+            # are checked in check_jobs(). Retained failed pods must not remain
+            # generic pod issues after a later CronJob run has recovered.
+            terminal_job_pod = phase in {"Succeeded", "Failed"} and is_job_owned(pod)
+            if (pod["metadata"].get("deletionTimestamp")
+                    or phase == "Succeeded" or terminal_job_pod):
                 continue
 
             statuses = pod.get("status", {}).get("containerStatuses", [])
