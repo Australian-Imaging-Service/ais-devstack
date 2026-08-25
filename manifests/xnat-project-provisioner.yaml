@@ -7,7 +7,9 @@
 # copied into xnat-upload. Configured owners are then added and verified. A
 # PatientID route group is also added when it names an existing XNAT user; XNAT
 # misleadingly returns HTTP 200 when asked to add an unknown user, so membership
-# is always verified from the project users listing.
+# is always verified from the project users listing. A staged project token that
+# uniquely matches an existing project's ID, name, or secondary_ID is filer-moved
+# to the canonical primary-ID prefix before xnat-ingest sees it.
 #
 # Manual trigger:
 #   sudo kubectl -n xnat-upload create job --from=cronjob/xnat-project-provisioner xnat-project-provisioner-manual-$(date +%s)
@@ -37,6 +39,9 @@ data:
 
     bucket = os.environ["S3_BUCKET"]
     root_prefix = os.environ.get("S3_ROOT_PREFIX", "staged/").strip("/") + "/"
+    filer_url = os.environ.get(
+        "FILER_URL", "http://seaweedfs.seaweedfs.svc.cluster.local:8888"
+    ).rstrip("/")
     route_field = os.environ.get("XNAT_PROJECT_ROUTE_FIELD", "PatientID")
     xnat_url = os.environ["XNAT_URL"].rstrip("/")
     xnat_user = os.environ["XNAT_USER"]
@@ -129,22 +134,18 @@ data:
 
                 route_value = str(metadata.get(route_field) or "").strip()
                 match = route_re.match(route_value)
+                routed_project = None
                 if match:
                     routed_project = xnat_id(match.group("project"))
-                    if routed_project != project:
-                        log(
-                            "session_skipped",
-                            session=session,
-                            project=project,
-                            routed_project=routed_project,
-                            reason="staged project does not match routed metadata",
-                        )
-                        invalid += 1
-                        continue
                     group = xnat_id(match.group("group")) or None
 
-                entry = projects.setdefault(project, {"groups": set(), "sessions": []})
+                entry = projects.setdefault(
+                    project,
+                    {"groups": set(), "sessions": [], "routed_projects": set()},
+                )
                 entry["sessions"].append(session)
+                if routed_project:
+                    entry["routed_projects"].add(routed_project)
                 if group:
                     entry["groups"].add(group)
 
@@ -182,6 +183,96 @@ data:
             return []
         return payload.get("ResultSet", {}).get("Result", [])
 
+    def resolve_project_id(project):
+        status, body = xnat_request("GET", "/data/projects?format=json")
+        if status != 200:
+            raise RuntimeError(f"project list lookup returned HTTP {status}")
+
+        requested = project.casefold()
+        matches = set()
+        for row in result_rows(body):
+            project_id = row.get("ID") or row.get("id") or row.get("project")
+            if not project_id:
+                continue
+            aliases = (
+                project_id,
+                row.get("secondary_ID"),
+                row.get("secondary_id"),
+                row.get("name"),
+            )
+            if any(
+                str(alias).casefold() == requested
+                for alias in aliases
+                if alias
+            ):
+                matches.add(str(project_id))
+
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"project alias {project!r} is ambiguous: {','.join(sorted(matches))}"
+            )
+        return next(iter(matches), None)
+
+    def canonicalize_staged_sessions(requested_project, project, sessions):
+        if requested_project == project:
+            return
+
+        s3 = s3_client()
+        bucket_path = f"/buckets/{bucket}"
+        for session in sessions:
+            expected_prefix = f"{requested_project}."
+            if not session.startswith(expected_prefix):
+                raise RuntimeError(
+                    f"session {session!r} does not start with {expected_prefix!r}"
+                )
+            canonical_session = project + session[len(requested_project):]
+            source_prefix = f"{root_prefix}{session}/"
+            destination_prefix = f"{root_prefix}{canonical_session}/"
+            destination = s3.list_objects_v2(
+                Bucket=bucket,
+                Prefix=destination_prefix,
+                MaxKeys=1,
+            )
+            if destination.get("KeyCount", 0):
+                raise RuntimeError(
+                    f"canonical staged destination already exists: {destination_prefix}"
+                )
+
+            source_path = f"{bucket_path}/{source_prefix.rstrip('/')}"
+            destination_path = f"{bucket_path}/{destination_prefix.rstrip('/')}"
+            request = urllib.request.Request(
+                filer_url
+                + urllib.parse.quote(destination_path, safe="/")
+                + "?"
+                + urllib.parse.urlencode({"mv.from": source_path}),
+                data=b"",
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                response.read()
+                if response.status != 204:
+                    raise RuntimeError(
+                        f"filer move returned HTTP {response.status}: "
+                        f"{source_prefix} -> {destination_prefix}"
+                    )
+
+            moved = s3.list_objects_v2(
+                Bucket=bucket,
+                Prefix=destination_prefix,
+                MaxKeys=1,
+            )
+            if not moved.get("KeyCount", 0):
+                raise RuntimeError(
+                    f"canonical staged destination is empty after move: {destination_prefix}"
+                )
+            log(
+                "staged_session_canonicalized",
+                requested_project=requested_project,
+                project=project,
+                source=source_prefix,
+                destination=destination_prefix,
+            )
+
     def project_owners(project):
         quoted = urllib.parse.quote(project, safe="")
         status, body = xnat_request("GET", f"/data/projects/{quoted}/users?format=json")
@@ -199,6 +290,16 @@ data:
         return owners
 
     def ensure_project(project, route_groups, uploader):
+        requested_project = project
+        canonical_project = resolve_project_id(requested_project)
+        if canonical_project:
+            project = canonical_project
+            if project != requested_project:
+                log(
+                    "project_alias_resolved",
+                    requested_project=requested_project,
+                    project=project,
+                )
         quoted_project = urllib.parse.quote(project, safe="")
         status, _ = xnat_request("GET", f"/data/projects/{quoted_project}?format=json")
         created = False
@@ -254,6 +355,7 @@ data:
             created=created,
             owners=sorted(owners),
         )
+        return project
 
     def main():
         global session_id
@@ -289,7 +391,26 @@ data:
         failures = invalid
         for project, route in sorted(projects.items()):
             try:
-                ensure_project(project, route["groups"], uploader)
+                canonical_project = resolve_project_id(project) or project
+                routed_projects = {
+                    resolve_project_id(routed_project) or routed_project
+                    for routed_project in route["routed_projects"]
+                }
+                if any(
+                    routed_project != canonical_project
+                    for routed_project in routed_projects
+                ):
+                    raise RuntimeError(
+                        "staged project does not match routed metadata: "
+                        f"staged={project!r} -> {canonical_project!r}, "
+                        f"routed={','.join(sorted(routed_projects))}"
+                    )
+                canonical_project = ensure_project(
+                    project, route["groups"], uploader
+                )
+                canonicalize_staged_sessions(
+                    project, canonical_project, route["sessions"]
+                )
             except Exception as exc:  # noqa: BLE001
                 failures += 1
                 log("project_failed", project=project, error=str(exc))
@@ -362,6 +483,8 @@ spec:
                   value: "http://seaweedfs.seaweedfs.svc.cluster.local:8333"
                 - name: AWS_DEFAULT_REGION
                   value: "us-east-1"
+                - name: FILER_URL
+                  value: "http://seaweedfs.seaweedfs.svc.cluster.local:8888"
               volumeMounts:
                 - name: script
                   mountPath: /opt/xnat-project-provisioner
