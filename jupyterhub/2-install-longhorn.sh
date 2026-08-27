@@ -3,6 +3,11 @@
 # Supports both MicroK8s and k3s environments
 set -e
 
+# v1.11.0 has a confirmed instance-manager proxy connection leak that causes
+# unbounded memory growth. Keep this pinned to a tested release containing the
+# permanent fix instead of silently installing whichever chart is newest.
+LONGHORN_VERSION="${LONGHORN_VERSION:-1.12.1}"
+
 # Color codes
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -45,6 +50,7 @@ fi
 echo "=========================================="
 echo "STEP 1: Installing Longhorn"
 echo "Environment: ${ENV_NAME}"
+echo "Version: ${LONGHORN_VERSION}"
 echo "=========================================="
 
 # Add Longhorn Helm repo
@@ -60,6 +66,7 @@ $KUBECTL create namespace longhorn-system 2>/dev/null || echo "Namespace already
 echo -e "${BLUE}[3/4] Installing Longhorn...${NC}"
 $HELM upgrade --install longhorn longhorn/longhorn \
   --namespace longhorn-system \
+  --version "$LONGHORN_VERSION" \
   --set defaultSettings.defaultDataPath="$LONGHORN_DATA_PATH" \
   --set csi.kubeletRootDir="$KUBELET_PATH" \
   --set persistence.defaultClass=true \
