@@ -213,7 +213,7 @@ chmod +x 2-install-longhorn.sh
 ./2-install-longhorn.sh
 ```
 
-Longhorn provides:
+Longhorn v1.12.1 provides:
 - Dynamic PVC provisioning
 - Storage replication
 - Snapshot capabilities
@@ -706,4 +706,3 @@ Use this checklist to track your installation:
 
 **Version:** 1.1.0  
 **Last Updated:** 04-12-2025  
-
