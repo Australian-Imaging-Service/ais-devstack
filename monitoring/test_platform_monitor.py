@@ -121,5 +121,73 @@ class JobChecksTest(unittest.TestCase):
         self.assertIn("cronjob-failing:test/worker", MONITOR.issues)
 
 
+class EdgeBlockedChecksTest(unittest.TestCase):
+    def setUp(self):
+        MONITOR.EXPECTED_EDGES = ["edge-test"]
+        MONITOR.EDGE_BLOCKED_GRACE_MINUTES = 30
+        MONITOR.NOW = datetime.now(timezone.utc)
+        MONITOR.issues = {}
+        MONITOR.events = []
+        MONITOR.digest = []
+        MONITOR.state = {
+            "alerts": {},
+            "edge_blocked_seen": {},
+        }
+
+    @staticmethod
+    def payload(blocked=None):
+        return {
+            "updated": MONITOR.NOW.isoformat(),
+            "blocked_studies": blocked or [],
+        }
+
+    def run_edge_check(self, blocked=None):
+        auto_label = self.payload(blocked)
+        samba = self.payload()
+        MONITOR.filer_read = lambda path: __import__("json").dumps(
+            auto_label if "auto-label" in path else samba
+        ).encode()
+        MONITOR.check_edge_ingest_health()
+
+    def test_new_project_block_is_suppressed_during_grace(self):
+        self.run_edge_check([{
+            "study": "study-1",
+            "project": "new-project",
+            "reason": "project is not in AIS_EDGE_AUTO_IMPORT_ALLOWED_PROJECTS",
+        }])
+        self.assertNotIn("edge-dicom-blocked:edge-test:study-1", MONITOR.issues)
+        self.assertIn(
+            "edge-dicom-blocked:edge-test:study-1",
+            MONITOR.state["edge_blocked_seen"],
+        )
+
+    def test_persistent_project_block_alerts_after_grace(self):
+        key = "edge-dicom-blocked:edge-test:study-1"
+        MONITOR.state["edge_blocked_seen"][key] = (
+            MONITOR.NOW - timedelta(minutes=31)
+        ).isoformat()
+        self.run_edge_check([{
+            "study": "study-1",
+            "project": "bad-project",
+            "reason": "project is not in AIS_EDGE_AUTO_IMPORT_ALLOWED_PROJECTS",
+        }])
+        self.assertIn(key, MONITOR.issues)
+
+    def test_transient_project_block_clears_without_alert(self):
+        key = "edge-dicom-blocked:edge-test:study-1"
+        MONITOR.state["edge_blocked_seen"][key] = MONITOR.NOW.isoformat()
+        self.run_edge_check()
+        self.assertNotIn(key, MONITOR.issues)
+        self.assertNotIn(key, MONITOR.state["edge_blocked_seen"])
+
+    def test_malformed_route_alerts_immediately(self):
+        key = "edge-dicom-blocked:edge-test:study-1"
+        self.run_edge_check([{
+            "study": "study-1",
+            "reason": "routing field does not match subject@group/project",
+        }])
+        self.assertIn(key, MONITOR.issues)
+
+
 if __name__ == "__main__":
     unittest.main()
