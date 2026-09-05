@@ -73,6 +73,7 @@ EXPECTED_EDGES = [edge.strip() for edge in env(
     "EXPECTED_EDGES", "edge-rsl60"
 ).split(",") if edge.strip()]
 EDGE_HEALTH_MAX_AGE_MINUTES = int(env("EDGE_HEALTH_MAX_AGE_MINUTES", "10"))
+EDGE_BLOCKED_GRACE_MINUTES = int(env("EDGE_BLOCKED_GRACE_MINUTES", "30"))
 REIMPORT_PENDING_MAX_MINUTES = int(env("REIMPORT_PENDING_MAX_MINUTES", "45"))
 REIMPORT_READY_MAX_MINUTES = int(env("REIMPORT_READY_MAX_MINUTES", "10"))
 REIMPORT_STATE_RESET_ALERT_HOURS = int(env("REIMPORT_STATE_RESET_ALERT_HOURS", "24"))
@@ -207,6 +208,7 @@ state.setdefault("alerts", {})
 state.setdefault("restart_counts", {})
 state.setdefault("alerted_jobs", [])
 state.setdefault("alerted_workflows", [])
+state.setdefault("edge_blocked_seen", {})
 
 # ── Checks ───────────────────────────────────────────────────────────
 
@@ -792,6 +794,7 @@ def check_ingest_backlog():
 def check_edge_ingest_health():
     max_age = timedelta(minutes=EDGE_HEALTH_MAX_AGE_MINUTES)
     summary = []
+    blocked_dicom_current = {}
     object_names = (
         "edge-ingest-auto-label-health.json",
         "edge-ingest-samba-health.json",
@@ -952,13 +955,30 @@ def check_edge_ingest_health():
             for item in blocked_studies:
                 study = str(item.get("study", "?"))
                 project = str(item.get("project", "?"))
-                add_issue(
-                    f"edge-dicom-blocked:{edge}:{study}",
+                key = f"edge-dicom-blocked:{edge}:{study}"
+                detail = (
                     f"DICOM study {study} on {edge} is blocked from ingestion "
                     f"(project '{project}').\nReason: {item.get('reason', 'routing rejected')}."
                 )
+                if item.get("reason") == "project is not in AIS_EDGE_AUTO_IMPORT_ALLOWED_PROJECTS":
+                    blocked_dicom_current[key] = detail
+                else:
+                    add_issue(key, detail)
 
         summary.append(f"{edge}: " + "; ".join(edge_rows))
+
+    # New projects can briefly appear blocked while edge admission catches up.
+    # Require the same study to remain blocked across the grace window, but keep
+    # already-alerted problems active so their eventual recovery is reported.
+    previous_seen = state.get("edge_blocked_seen", {})
+    next_seen = {}
+    grace = timedelta(minutes=EDGE_BLOCKED_GRACE_MINUTES)
+    for key, detail in blocked_dicom_current.items():
+        first_seen = parse_iso_time(previous_seen.get(key)) or NOW
+        next_seen[key] = first_seen.isoformat()
+        if key in state["alerts"] or NOW - first_seen >= grace:
+            add_issue(key, detail)
+    state["edge_blocked_seen"] = next_seen
 
     digest.append(("Edge ingest health", "\n".join(summary) if summary else "no edges configured"))
 

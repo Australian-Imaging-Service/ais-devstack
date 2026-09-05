@@ -104,6 +104,10 @@ spec:
                   value: "edge-rsl60"
                 - name: EDGE_HEALTH_MAX_AGE_MINUTES
                   value: "10"
+                # Suppress transient policy blocks while a newly-routed project
+                # is admitted; persistent routing mistakes still alert.
+                - name: EDGE_BLOCKED_GRACE_MINUTES
+                  value: "30"
                 - name: REIMPORT_PENDING_MAX_MINUTES
                   value: "45"
                 - name: REIMPORT_READY_MAX_MINUTES
