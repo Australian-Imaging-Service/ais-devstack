@@ -419,3 +419,7 @@ curl -u admin:<password-from-xnat-archiver-creds-secret> -X POST -H "Content-Typ
   -d '{"enabledProviders": ["localdb", "stanford"]}' \
   http://localhost:8081/xapi/siteConfig
 ```
+
+### Automatic raw-folder project creation (2026-09-15)
+
+rsl60 sets `EDGE_SAMBA_UPLOAD_ALLOWED_PROJECTS=""`: every raw project is admitted without DICOMs. The deployment script preserves explicit emptiness (shell `${VAR-default}`, not `${VAR:-default}`). The central provisioner reads `SourceProject` and `SourceGroup` from `Source: samba-upload` metadata, creates the project, and verifies ownership for the matching existing XNAT user. Missing raw project/group metadata is rejected. Existing quiet periods and canonical project mismatch checks still apply. Keep this setting in `ais-edge/config/edge-nodes.env` on redeployment.

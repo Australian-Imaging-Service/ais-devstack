@@ -4,12 +4,14 @@
 #
 # The xnat-credentials alias belongs to edge-uploader. XNAT permits that user to
 # create a project and makes it an Owner, so no administrator credentials are
-# copied into xnat-upload. Configured owners are then added and verified. A
-# PatientID route group is also added when it names an existing XNAT user; XNAT
-# misleadingly returns HTTP 200 when asked to add an unknown user, so membership
+# copied into xnat-upload. Configured owners are then added and verified. The
+# raw SourceGroup or PatientID route group is added for an existing XNAT user.
+# XNAT returns HTTP 200 when asked to add an unknown user, so membership
 # is always verified from the project users listing. A staged project token that
 # uniquely matches an existing project's ID, name, or secondary_ID is filer-moved
 # to the canonical primary-ID prefix before xnat-ingest sees it.
+# rsl60 admits every raw project with EDGE_SAMBA_UPLOAD_ALLOWED_PROJECTS=""
+# in ais-edge/config/edge-nodes.env; no Orthanc study is required.
 #
 # Manual trigger:
 #   sudo kubectl -n xnat-upload create job --from=cronjob/xnat-project-provisioner xnat-project-provisioner-manual-$(date +%s)
@@ -135,7 +137,15 @@ data:
                 route_value = str(metadata.get(route_field) or "").strip()
                 match = route_re.match(route_value)
                 routed_project = None
-                if match:
+                if metadata.get("Source") == "samba-upload":
+                    # Raw sessions carry their route without requiring DICOMs.
+                    routed_project = xnat_id(metadata.get("SourceProject"))
+                    group = xnat_id(metadata.get("SourceGroup")) or None
+                    if not routed_project or not group:
+                        log("session_skipped", session=session, reason="missing raw project/group metadata")
+                        invalid += 1
+                        continue
+                elif match:
                     routed_project = xnat_id(match.group("project"))
                     group = xnat_id(match.group("group")) or None
 
