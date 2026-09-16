@@ -120,6 +120,64 @@ class JobChecksTest(unittest.TestCase):
         MONITOR.check_jobs()
         self.assertIn("cronjob-failing:test/worker", MONITOR.issues)
 
+    @staticmethod
+    def _stamp(dt):
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _run(self, failed_at, last_successful_at):
+        failed_job = {
+            "metadata": {
+                "name": "worker-123",
+                "uid": "job-uid",
+                "creationTimestamp": self._stamp(failed_at),
+                "ownerReferences": [{"kind": "CronJob", "name": "worker"}],
+            },
+            "status": {
+                "startTime": self._stamp(failed_at),
+                "conditions": [{
+                    "type": "Failed",
+                    "status": "True",
+                    "reason": "BackoffLimitExceeded",
+                    "message": "test failure",
+                }],
+            },
+        }
+        cronjob = {
+            "metadata": {
+                "name": "worker",
+                "creationTimestamp": self._stamp(failed_at),
+            },
+            "spec": {"schedule": "*/15 * * * *"},
+            "status": {},
+        }
+        if last_successful_at is not None:
+            cronjob["status"]["lastSuccessfulTime"] = self._stamp(
+                last_successful_at)
+
+        MONITOR.k8s_get = lambda path: {
+            "items": [failed_job] if path.endswith("/jobs") else [cronjob]}
+        MONITOR.check_jobs()
+
+    def test_stale_failed_job_does_not_alert_after_recovery(self):
+        """A retained failure from weeks ago must not alert once the CronJob
+        has succeeded since -- Kubernetes keeps failed Jobs around, so the
+        newest *terminal* Job can long outlive the outage that produced it."""
+        now = datetime.now(timezone.utc)
+        self._run(failed_at=now - timedelta(days=41),
+                  last_successful_at=now - timedelta(minutes=1))
+        self.assertNotIn("cronjob-failing:test/worker", MONITOR.issues)
+
+    def test_failure_after_last_success_still_alerts(self):
+        now = datetime.now(timezone.utc)
+        self._run(failed_at=now - timedelta(minutes=1),
+                  last_successful_at=now - timedelta(hours=2))
+        self.assertIn("cronjob-failing:test/worker", MONITOR.issues)
+
+    def test_failure_with_no_recorded_success_still_alerts(self):
+        now = datetime.now(timezone.utc)
+        self._run(failed_at=now - timedelta(minutes=1), last_successful_at=None)
+        self.assertIn("cronjob-failing:test/worker", MONITOR.issues)
+
 
 class EdgeBlockedChecksTest(unittest.TestCase):
     def setUp(self):

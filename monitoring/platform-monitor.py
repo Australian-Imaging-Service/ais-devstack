@@ -324,6 +324,10 @@ def check_jobs():
     seen_uids = set()
     cron_lines = []
     for ns in K8S_NAMESPACES:
+        cronjobs = {
+            cj["metadata"]["name"]: cj
+            for cj in k8s_get(
+                f"/apis/batch/v1/namespaces/{ns}/cronjobs").get("items", [])}
         cron_jobs = {}  # cronjob name -> owned jobs
         for job in k8s_get(f"/apis/batch/v1/namespaces/{ns}/jobs").get("items", []):
             name = job["metadata"]["name"]
@@ -354,13 +358,27 @@ def check_jobs():
                 key=lambda j: j.get("status", {}).get("startTime")
                 or j["metadata"]["creationTimestamp"])
             if job_condition(latest, "Failed"):
+                # Kubernetes retains failed Jobs (failedJobsHistoryLimit) long
+                # after a CronJob recovers, and the newest run may not have
+                # reached a terminal state yet -- so the newest *terminal* Job
+                # can be weeks stale. Only alert when nothing has succeeded
+                # since it failed, otherwise a single transient outage keeps
+                # alerting forever.
+                failed_at = parse_k8s_time(
+                    latest.get("status", {}).get("startTime")
+                    or latest["metadata"]["creationTimestamp"])
+                last_ok = parse_k8s_time(
+                    cronjobs.get(cj_name, {}).get("status", {})
+                    .get("lastSuccessfulTime"))
+                if last_ok and failed_at and last_ok > failed_at:
+                    continue
                 add_issue(
                     f"cronjob-failing:{ns}/{cj_name}",
                     f"CronJob {ns}/{cj_name}: latest run "
                     f"{latest['metadata']['name']} FAILED "
                     f"({job_failure_reason(latest)})")
 
-        for cj in k8s_get(f"/apis/batch/v1/namespaces/{ns}/cronjobs").get("items", []):
+        for cj in cronjobs.values():
             name = cj["metadata"]["name"]
             if cj.get("spec", {}).get("suspend"):
                 continue
