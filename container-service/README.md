@@ -38,7 +38,7 @@ The installer loads:
 - `commands/aslprep-session.json` - `pennlinc/aslprep:26.0.3`
   participant-level ASLPrep command through `xnat2bids`, enabled site-wide for
   `xnat:mrSessionData`.
-- `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_8.3.2:20260421`
+- `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_9.19.1:20260914`
   session-level QSMxT command through `xnat2bids`, enabled site-wide for
   `xnat:mrSessionData`.
 - `commands/musclemap-scan.json` - Neurodesk `vnmd/musclemap_1.3.45:20260701`
