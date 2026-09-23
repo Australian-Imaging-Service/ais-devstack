@@ -30,3 +30,4 @@ jupyterhub/5-jupyterhub-values.yaml
 
 # JupyterHub plugin (downloaded during install)
 jupyterhub/*.jar
+__pycache__/

@@ -38,7 +38,7 @@ The installer loads:
 - `commands/aslprep-session.json` - `pennlinc/aslprep:26.0.3`
   participant-level ASLPrep command through `xnat2bids`, enabled site-wide for
   `xnat:mrSessionData`.
-- `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_9.22.0:PENDING`
+- `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_9.22.0:20260923`
   session-level QSMxT command with internal DICOM-to-BIDS conversion, enabled site-wide for
   `xnat:mrSessionData`.
 - `commands/musclemap-scan.json` - Neurodesk `vnmd/musclemap_1.3.45:20260701`
@@ -78,9 +78,35 @@ at their slab centres. QSMxT 9.19.1–9.21.x wrote malformed minIP headers
 (QSMxT#211, fixed in 9.22.0); the wrapper reads every minIP's full payload
 and drops any malformed one before upload.
 
+QSMxT 9.22.0 adds, all selectable at launch:
+
+- **Generate SMWI** (default on): susceptibility map-weighted imaging, which
+  weights the magnitude by a mask built from the susceptibility map so contrast
+  stays at the source. Writes `desc-paramagnetic_smwi` and
+  `desc-diamagnetic_smwi`, each with its own `minIP`.
+- **Generate R2' map** with **R2' source**: `auto` measures R2' = R2* - R2 from
+  a multi-echo spin-echo scan in the session, and otherwise predicts it with
+  R2PRIMEnet; `mese` only measures; `r2primenet` always predicts. A prediction
+  is an estimate, not a measurement.
+- **Two-pass artefact reduction**: a second reconstruction on a mask that keeps
+  holes at strong sources (air-tissue interfaces, haemorrhage, implants). It
+  roughly doubles run time; the single-pass map is kept as
+  `desc-singlepass_Chimap`.
+- **Segment brain (SynthSeg)**: whole-brain FreeSurfer labels from the GRE
+  magnitude (`dseg.nii` plus its `dseg.tsv` label table), with no T1w or
+  registration. **Per-structure susceptibility statistics** adds median, mean,
+  SD and 5th/95th percentiles per structure (`desc-segmentation_qsmstats.tsv`)
+  and implies segmentation.
+- **QSM algorithm** gains LSQR and HEIDI; **Mask preset** gains Combined
+  (`bet-and-phase`, BET on the magnitude intersected with a thresholded
+  phase-quality map) and HD-BET.
+
+The SynthSeg and R2PRIMEnet weights ship in the image, so runs need no network.
+
 The scan-link sync runs every 15 minutes and links generated maps to the source
-phase scan as `QSM`, `SWI` (including minimum-intensity projections), `T2STAR`,
-and `R2STAR` resources. The session resource retains all derivatives. Existing
+phase scan as `QSM` (including a two-pass run's single-pass map), `SWI`
+(including its minIP), `SMWI` (both SMWI images and their minIPs), `T2STAR`,
+`R2STAR`, `R2PRIME`, and `SEG` (segmentation with its label table) resources. The session resource retains all derivatives. Existing
 runs must be rerun to generate maps that were previously disabled.
 
 Regression checks: `python3 -m unittest discover -s tests -p 'test_qsmxt*.py'`.
@@ -89,7 +115,7 @@ phantom in the installed image:
 
 ```bash
 sudo docker run --rm --network none --cpus 4 --memory 4g \
-  -v "$PWD:/repo:ro" --entrypoint bash vnmd/qsmxt_9.22.0:PENDING \
+  -v "$PWD:/repo:ro" --entrypoint bash vnmd/qsmxt_9.22.0:20260923 \
   -lc 'python3 -m unittest discover -s /repo/tests -p "test_qsmxt*.py" && python3 /repo/tests/qsmxt_phantom.py'
 ```
 

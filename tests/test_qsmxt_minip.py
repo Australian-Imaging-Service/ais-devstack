@@ -28,10 +28,10 @@ class MinipGuardTests(unittest.TestCase):
         self.anat.mkdir(parents=True)
         nib.save(nib.Nifti1Image(np.ones((4, 4, 14), dtype='float32'), np.eye(4)), self.anat / 'sub-01_swi.nii')
 
-    def write_minip(self, depth):
-        path = self.anat / 'sub-01_minIP.nii'
-        nib.save(nib.Nifti1Image(np.ones((4, 4, depth), dtype='float32'), np.eye(4)), path)
-        (self.anat / 'sub-01_minIP.json').write_text('{"SeriesNumber": 7}')
+    def write_minip(self, depth, name='sub-01_minIP', xy=(4, 4)):
+        path = self.anat / f'{name}.nii'
+        nib.save(nib.Nifti1Image(np.ones((*xy, depth), dtype='float32'), np.eye(4)), path)
+        (self.anat / f'{name}.json').write_text('{"SeriesNumber": 7}')
         return path
 
     def test_valid_projection_is_kept(self):
@@ -39,11 +39,21 @@ class MinipGuardTests(unittest.TestCase):
         self.assertEqual(check_derivatives(self.root), 0)
         self.assertTrue(minip.exists())
 
-    def test_full_volume_minip_is_removed_with_sidecar(self):
-        minip = self.write_minip(14)
+    def test_mismatched_grid_is_removed_with_sidecar(self):
+        minip = self.write_minip(8, xy=(4, 5))
         self.assertEqual(check_derivatives(self.root), 1)
         self.assertFalse(minip.exists())
         self.assertFalse((self.anat / 'sub-01_minIP.json').exists())
+
+    def test_smwi_minips_are_checked_against_smwi(self):
+        # SMWI projects with its own (smaller) window; there is no desc-*_swi.
+        for kind in ('paramagnetic', 'diamagnetic'):
+            nib.save(nib.Nifti1Image(np.ones((4, 4, 14), dtype='float32'), np.eye(4)), self.anat / f'sub-01_desc-{kind}_smwi.nii')
+        good = self.write_minip(11, name='sub-01_desc-paramagnetic_minIP')
+        bad = self.write_minip(11, name='sub-01_desc-diamagnetic_minIP', xy=(5, 4))
+        self.assertEqual(check_derivatives(self.root), 1)
+        self.assertTrue(good.exists())
+        self.assertFalse(bad.exists())
 
     def test_truncated_payload_is_removed(self):
         # QSMxT#211: header promises the SWI depth, payload holds nz-6 slices.
