@@ -2,13 +2,13 @@
   "name": "qsmxt-bids",
   "label": "QSMxT",
   "description": "Runs Neurodesk QSMxT 9.x on an XNAT MR session. The session's DICOM scans are mounted directly and QSMxT converts them to BIDS internally (qsmxt dicom-convert) before running the QSM pipeline, so no pre-existing NIFTI or BIDS scan resources are required.",
-  "version": "9.19.1-ais.1",
+  "version": "9.19.1-ais.3",
   "schema-version": "1.0",
   "type": "docker",
   "image": "vnmd/qsmxt_9.19.1:20260914",
   "index": "https://index.docker.io/v1/",
   "info-url": "https://qsmxt.github.io/QSMxT/",
-  "command-line": "bash -lc 'set -euo pipefail\ncase \"$QSMXT_PREMADE\" in default|gre|epi|bet|fast|body|nextqsm) ;; *) echo \"Invalid QSMxT premade pipeline: $QSMXT_PREMADE\" >&2; exit 2;; esac\nmkdir -p /work/home /work/matplotlib /work/bids /output\necho \"Converting DICOMs to BIDS...\"\nqsmxt dicom-convert /input /work/bids || echo \"WARNING: one or more series failed to convert; continuing with the series that succeeded\" >&2\nif ! find /work/bids -name '\\''*part-phase*.nii*'\\'' | grep -q .; then echo \"No QSM-compatible series (multi-echo GRE with phase) found after DICOM conversion\" >&2; exit 3; fi\nargs=(/work/bids --clean-intermediates)\ncase \"$QSMXT_PREMADE\" in\ndefault|gre) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nepi) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --inhomogeneity-correction);;\nbet) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nfast) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm vsharp --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nbody) args+=(--qsm-algorithm tgv --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nnextqsm) args+=(--qsm-algorithm nextqsm --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nesac\necho \"Running QSMxT...\"\nqsmxt run \"${args[@]}\"\nif ! find /work/bids/derivatives/qsmxt -name '\\''*_Chimap.nii*'\\'' 2>/dev/null | grep -q .; then echo \"QSMxT produced no Chimap output (no QSM-compatible series?)\" >&2; exit 3; fi\necho \"Backfilling SeriesNumber into Chimap sidecars...\"\npython3 - /work/bids <<'\\''PYBACKFILL'\\''\nimport json, re, sys\nfrom pathlib import Path\nbids = Path(sys.argv[1]); deriv = bids / \"derivatives\" / \"qsmxt\"\ndef ents(name):\n    return dict(re.findall(r\"(?:^|_)(sub|ses|acq|run)-([A-Za-z0-9]+)\", name))\nsrc = {}\nfor pat in (\"sub-*/ses-*/anat/*part-phase*.json\", \"sub-*/anat/*part-phase*.json\"):\n    for j in bids.glob(pat):\n        src.setdefault(tuple(sorted(ents(j.name).items())), j)\npatched = 0\nfor cj in deriv.glob(\"sub-*/**/anat/*_Chimap.json\"):\n    s = src.get(tuple(sorted(ents(cj.name).items())))\n    if s is None:\n        print(\"WARNING: no source phase sidecar for %s\" % cj.name, file=sys.stderr); continue\n    sd = json.loads(s.read_text()); cd = json.loads(cj.read_text())\n    for k in (\"SeriesNumber\", \"SeriesDescription\"):\n        if k in sd and k not in cd: cd[k] = sd[k]\n    cj.write_text(json.dumps(cd, indent=2)); patched += 1\nprint(\"Backfilled SeriesNumber into %d Chimap sidecar(s)\" % patched)\nPYBACKFILL\ncp -a /work/bids/derivatives/. /output/'",
+  "command-line": "bash -lc 'set -euo pipefail\ncase \"$QSMXT_PREMADE\" in custom|romeo-resharp-rts|romeo-ismv-hdqsm|romeo-resharp-tikhonov|romeo-resharp-tv|romeo-resharp-hdqsm|romeo-ismv-rts|romeo-ismv-whqsm|romeo-sharp-whqsm|romeo-resharp-whqsm|romeo-sharp-tikhonov|qsmart|tgv|autoqsm|nextqsm|iqsm|iqsm-plus|default|gre|epi|bet|fast|body) ;; *) echo \"Invalid premade: $QSMXT_PREMADE\" >&2; exit 2;; esac\ncase \"$QSMXT_ALGORITHM\" in whqsm|hdqsm|rts|tv|tkd|tsvd|tgv|tikhonov|nltv|medi|ilsqr|qsmart|tfi|ndi|fansi|fansi-tgv|l1qsm|amp-pe|xqsm|qsmnet|qsmnet-plus|autoqsm|qsmgan|ir2qsm|lpcnn|modl-qsm|nextqsm|iqsm|iqsm-plus) ;; *) echo \"Invalid qsm-algorithm: $QSMXT_ALGORITHM\" >&2; exit 2;; esac\ncase \"$QSMXT_UNWRAPPING\" in romeo|laplacian) ;; *) echo \"Invalid unwrapping-algorithm: $QSMXT_UNWRAPPING\" >&2; exit 2;; esac\ncase \"$QSMXT_BACKGROUND\" in vsharp|pdf|lbv|ismv|sharp|resharp|harperella|iharperella|bfrnet|iqfm) ;; *) echo \"Invalid bf-algorithm: $QSMXT_BACKGROUND\" >&2; exit 2;; esac\ncase \"$QSMXT_MASKING_INPUT\" in magnitude|magnitude-first|magnitude-last|phase-quality) ;; *) echo \"Invalid masking-input: $QSMXT_MASKING_INPUT\" >&2; exit 2;; esac\ncase \"$QSMXT_MASK_PRESET\" in bet|robust-threshold) ;; *) echo \"Invalid mask-preset: $QSMXT_MASK_PRESET\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_SWI\" in true|false) ;; *) echo \"Invalid do-swi: $QSMXT_DO_SWI\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_T2STAR\" in true|false) ;; *) echo \"Invalid do-t2starmap: $QSMXT_DO_T2STAR\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_R2STAR\" in true|false) ;; *) echo \"Invalid do-r2starmap: $QSMXT_DO_R2STAR\" >&2; exit 2;; esac\nmkdir -p /work/home /work/matplotlib /work/bids /output\necho \"Converting DICOMs to BIDS...\"\nqsmxt dicom-convert /input /work/bids || echo \"WARNING: one or more series failed to convert; continuing with the series that succeeded\" >&2\nif ! find /work/bids -name '\"'\"'*part-phase*.nii*'\"'\"' | grep -q .; then echo \"No QSM-compatible series (multi-echo GRE with phase) found after DICOM conversion\" >&2; exit 3; fi\nargs=(/work/bids --clean-intermediates --n-procs 8)\ncase \"$QSMXT_PREMADE\" in\ncustom) args+=(--qsm-algorithm \"$QSMXT_ALGORITHM\" --unwrapping-algorithm \"$QSMXT_UNWRAPPING\" --bf-algorithm \"$QSMXT_BACKGROUND\");;\nromeo-resharp-rts) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm rts);;\nromeo-ismv-hdqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm hdqsm);;\nromeo-resharp-tikhonov) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm tikhonov);;\nromeo-resharp-tv) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm tv);;\nromeo-resharp-hdqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm hdqsm);;\nromeo-ismv-rts) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm rts);;\nromeo-ismv-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm whqsm);;\nromeo-sharp-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm sharp --qsm-algorithm whqsm);;\nromeo-resharp-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm whqsm);;\nromeo-sharp-tikhonov) args+=(--unwrapping-algorithm romeo --bf-algorithm sharp --qsm-algorithm tikhonov);;\nqsmart) args+=(--unwrapping-algorithm romeo --qsm-algorithm qsmart);;\ntgv) args+=(--unwrapping-algorithm romeo --qsm-algorithm tgv);;\nautoqsm) args+=(--unwrapping-algorithm romeo --qsm-algorithm autoqsm);;\nnextqsm) args+=(--unwrapping-algorithm romeo --qsm-algorithm nextqsm);;\niqsm) args+=(--qsm-algorithm iqsm);;\niqsm-plus) args+=(--qsm-algorithm iqsm-plus);;\ndefault|gre) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nepi) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --inhomogeneity-correction);;\nbet) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nfast) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm vsharp --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nbody) args+=(--qsm-algorithm tgv --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nesac\ncase \"$QSMXT_PREMADE\" in\n  default|gre|epi|bet|fast|body) ;;\n  *) args+=(--mask-preset \"$QSMXT_MASK_PRESET\" --masking-input \"$QSMXT_MASKING_INPUT\" --no-inhomogeneity-correction);;\nesac\n[[ \"$QSMXT_DO_SWI\" == false ]] || args+=(--do-swi)\n[[ \"$QSMXT_DO_T2STAR\" == false ]] || args+=(--do-t2starmap)\n[[ \"$QSMXT_DO_R2STAR\" == false ]] || args+=(--do-r2starmap)\nprintf '\"'\"'Running QSMxT: '\"'\"'; printf '\"'\"'%q '\"'\"' \"${args[@]}\"; printf '\"'\"'\\n'\"'\"'\necho \"T2starw is magnitude contrast; quantitative outputs are T2starmap (seconds) and R2starmap (1/s). Fitting requires at least three equally spaced echoes.\"\necho \"Running QSMxT...\"\nqsmxt run \"${args[@]}\"\nif ! find /work/bids/derivatives/qsmxt -name '\"'\"'*_Chimap.nii*'\"'\"' 2>/dev/null | grep -q .; then echo \"QSMxT produced no Chimap output (no QSM-compatible series?)\" >&2; exit 3; fi\npython3 - /work/bids/derivatives/qsmxt <<'\"'\"'PYMINIP'\"'\"'\n\"\"\"Work around QSMxT 9.19.1 saving minIP data with the SWI dimensions.\"\"\"\nimport json\nfrom pathlib import Path\nimport sys\n\nimport nibabel as nib\nimport numpy as np\n\n\ndef write_minip(swi_path, output_path, window=7):\n    source = nib.load(swi_path)\n    if len(source.shape) != 3 or source.shape[2] < 1 or window < 1:\n        raise ValueError(f\"Invalid SWI shape or projection window: {source.shape}, {window}\")\n    # QSMxT'\"'\"'s default is a sliding seven-slice minimum along voxel axis 2.\n    # Short acquisitions use one projection over all available slices.\n    window = min(window, source.shape[2])\n    data = source.get_fdata(dtype=np.float32)\n    depth = source.shape[2] - window + 1\n    projected = data[:, :, :depth].copy()\n    for offset in range(1, window):\n        np.minimum(projected, data[:, :, offset:offset + depth], out=projected)\n    affine = source.affine.copy()\n    # Locate each projected slice at the physical centre of its source slab.\n    affine[:3, 3] += source.affine[:3, 2] * ((window - 1) / 2)\n    header = source.header.copy()\n    header.set_data_dtype(np.float32)\n    result = nib.Nifti1Image(projected, affine, header)\n    result.set_qform(affine, int(source.header['\"'\"'qform_code'\"'\"']) or 1)\n    result.set_sform(affine, int(source.header['\"'\"'sform_code'\"'\"']) or 1)\n    nib.save(result, output_path)\n    # Read the complete payload: loading only the header missed this bug.\n    check = nib.load(output_path)\n    if check.shape != projected.shape or not np.array_equal(check.get_fdata(), projected, equal_nan=True):\n        raise RuntimeError(f\"minIP verification failed: {output_path}\")\n    return window\n\n\ndef repair_derivatives(root):\n    for swi in Path(root).glob('\"'\"'sub-*/**/anat/*_swi.nii*'\"'\"'):\n        if not (swi.name.endswith('\"'\"'.nii'\"'\"') or swi.name.endswith('\"'\"'.nii.gz'\"'\"')):\n            continue\n        output = swi.with_name(swi.name.replace('\"'\"'_swi.nii'\"'\"', '\"'\"'_minIP.nii'\"'\"'))\n        window = write_minip(swi, output)\n        sidecar = output.with_name(output.name.removesuffix('\"'\"'.gz'\"'\"').removesuffix('\"'\"'.nii'\"'\"') + '\"'\"'.json'\"'\"')\n        metadata = json.loads(sidecar.read_text()) if sidecar.exists() else {}\n        metadata.update(ProjectionWindowSlices=window, ProjectionAxis=2,\n                        Description='\"'\"'Sliding minimum-intensity projection of SWI; slice positions are slab centres.'\"'\"')\n        sidecar.write_text(json.dumps(metadata, indent=2) + '\"'\"'\\n'\"'\"')\n        print(f'\"'\"'Wrote valid minIP ({window}-slice slabs): {output.name}'\"'\"')\n\n\nif __name__ == '\"'\"'__main__'\"'\"':\n    repair_derivatives(sys.argv[1])\nPYMINIP\necho \"Backfilling source metadata into derivative sidecars...\"\npython3 - /work/bids <<'\"'\"'PYBACKFILL'\"'\"'\nimport json, re, sys\nfrom pathlib import Path\nbids = Path(sys.argv[1]); deriv = bids / \"derivatives\" / \"qsmxt\"\ndef ents(name):\n    return dict(re.findall(r\"(?:^|_)(sub|ses|acq|run)-([A-Za-z0-9]+)\", name))\nsrc = {}\nfor pat in (\"sub-*/ses-*/anat/*part-phase*.json\", \"sub-*/anat/*part-phase*.json\"):\n    for j in bids.glob(pat):\n        src.setdefault(tuple(sorted(ents(j.name).items())), j)\npatched = 0\nfor nii in deriv.glob(\"sub-*/**/anat/*.nii*\"):\n    if not (nii.name.endswith(\".nii\") or nii.name.endswith(\".nii.gz\")): continue\n    cj = nii.with_name(nii.name.removesuffix(\".gz\").removesuffix(\".nii\") + \".json\")\n    s = src.get(tuple(sorted(ents(cj.name).items())))\n    if s is None:\n        print(\"WARNING: no source phase sidecar for %s\" % cj.name, file=sys.stderr); continue\n    sd = json.loads(s.read_text()); cd = json.loads(cj.read_text()) if cj.exists() else {}\n    for k in (\"SeriesNumber\", \"SeriesDescription\"):\n        if k in sd and k not in cd: cd[k] = sd[k]\n    cj.write_text(json.dumps(cd, indent=2)); patched += 1\nprint(\"Backfilled SeriesNumber into %d derivative sidecar(s)\" % patched)\nPYBACKFILL\nfor spec in \"$QSMXT_DO_SWI:swi\" \"$QSMXT_DO_T2STAR:T2starmap\" \"$QSMXT_DO_R2STAR:R2starmap\"; do\n  if [[ \"${spec%%:*}\" == true ]] && ! find /work/bids/derivatives/qsmxt -name \"*_${spec#*:}.nii*\" -print -quit | grep -q .; then\n    echo \"WARNING: requested ${spec#*:} was not produced. Check magnitude/phase pairing, echo count, echo spacing, and QSMxT logs.\" >&2\n  fi\ndone\ncp -a /work/bids/derivatives/. /output/'",
   "working-directory": "/work",
   "override-entrypoint": true,
   "reserve-memory": "8192",
@@ -17,7 +17,15 @@
   "environment-variables": {
     "HOME": "/work/home",
     "MPLCONFIGDIR": "/work/matplotlib",
-    "QSMXT_PREMADE": "#PREMADE#"
+    "QSMXT_PREMADE": "#PREMADE#",
+    "QSMXT_ALGORITHM": "#QSM_ALGORITHM#",
+    "QSMXT_UNWRAPPING": "#UNWRAPPING_ALGORITHM#",
+    "QSMXT_BACKGROUND": "#BF_ALGORITHM#",
+    "QSMXT_MASKING_INPUT": "#MASKING_INPUT#",
+    "QSMXT_MASK_PRESET": "#MASK_PRESET#",
+    "QSMXT_DO_SWI": "#DO_SWI#",
+    "QSMXT_DO_T2STAR": "#DO_T2STARMAP#",
+    "QSMXT_DO_R2STAR": "#DO_R2STARMAP#"
   },
   "mounts": [
     {
@@ -39,12 +47,172 @@
   "inputs": [
     {
       "name": "premade",
-      "label": "Premade pipeline",
-      "description": "QSMxT pipeline preset, mapped onto QSMxT 9.x algorithm flags. Supported values: default, gre, epi, bet, fast, body, nextqsm.",
-      "type": "string",
+      "label": "Pipeline preset",
+      "type": "select-one",
       "required": true,
-      "default-value": "gre",
-      "replacement-key": "#PREMADE#"
+      "default-value": "custom",
+      "select-values": [
+        "custom",
+        "romeo-resharp-rts",
+        "romeo-ismv-hdqsm",
+        "romeo-resharp-tikhonov",
+        "romeo-resharp-tv",
+        "romeo-resharp-hdqsm",
+        "romeo-ismv-rts",
+        "romeo-ismv-whqsm",
+        "romeo-sharp-whqsm",
+        "romeo-resharp-whqsm",
+        "romeo-sharp-tikhonov",
+        "qsmart",
+        "tgv",
+        "autoqsm",
+        "nextqsm",
+        "iqsm",
+        "iqsm-plus",
+        "default",
+        "gre",
+        "epi",
+        "bet",
+        "fast",
+        "body"
+      ],
+      "replacement-key": "#PREMADE#",
+      "description": "OpenRecon presets override the custom algorithm controls. Legacy presets remain available for existing configurations."
+    },
+    {
+      "name": "qsm-algorithm",
+      "label": "QSM algorithm",
+      "type": "select-one",
+      "required": true,
+      "default-value": "hdqsm",
+      "select-values": [
+        "whqsm",
+        "hdqsm",
+        "rts",
+        "tv",
+        "tkd",
+        "tsvd",
+        "tgv",
+        "tikhonov",
+        "nltv",
+        "medi",
+        "ilsqr",
+        "qsmart",
+        "tfi",
+        "ndi",
+        "fansi",
+        "fansi-tgv",
+        "l1qsm",
+        "amp-pe",
+        "xqsm",
+        "qsmnet",
+        "qsmnet-plus",
+        "autoqsm",
+        "qsmgan",
+        "ir2qsm",
+        "lpcnn",
+        "modl-qsm",
+        "nextqsm",
+        "iqsm",
+        "iqsm-plus"
+      ],
+      "replacement-key": "#QSM_ALGORITHM#",
+      "description": "QSMxT inversion algorithm for the Custom pipeline preset. HD-QSM is the OpenRecon default for a fast reconstruction with good QSM-CI performance."
+    },
+    {
+      "name": "unwrapping-algorithm",
+      "label": "Unwrap",
+      "type": "select-one",
+      "required": true,
+      "default-value": "romeo",
+      "select-values": [
+        "romeo",
+        "laplacian"
+      ],
+      "replacement-key": "#UNWRAPPING_ALGORITHM#",
+      "description": "QSMxT phase unwrapping algorithm. ROMEO is the recommended default for multi-echo QSM."
+    },
+    {
+      "name": "bf-algorithm",
+      "label": "Background removal",
+      "type": "select-one",
+      "required": true,
+      "default-value": "ismv",
+      "select-values": [
+        "vsharp",
+        "pdf",
+        "lbv",
+        "ismv",
+        "sharp",
+        "resharp",
+        "harperella",
+        "iharperella",
+        "bfrnet",
+        "iqfm"
+      ],
+      "replacement-key": "#BF_ALGORITHM#",
+      "description": "QSMxT background-field removal algorithm for the Custom pipeline preset. iSMV is the OpenRecon default, paired with ROMEO and HD-QSM."
+    },
+    {
+      "name": "masking-input",
+      "label": "Threshold input",
+      "type": "select-one",
+      "required": true,
+      "default-value": "magnitude",
+      "select-values": [
+        "magnitude",
+        "magnitude-first",
+        "magnitude-last",
+        "phase-quality"
+      ],
+      "replacement-key": "#MASKING_INPUT#",
+      "description": "Input used by Robust threshold and the threshold part of Combined. Magnitude is safer for single-echo acquisitions; phase quality is most useful with multiple echoes."
+    },
+    {
+      "name": "mask-preset",
+      "label": "Mask preset",
+      "type": "select-one",
+      "required": true,
+      "default-value": "bet",
+      "select-values": [
+        "bet",
+        "robust-threshold"
+      ],
+      "replacement-key": "#MASK_PRESET#",
+      "description": "Brain mask for Custom and OpenRecon presets. Legacy presets retain their original masks."
+    },
+    {
+      "name": "do-swi",
+      "label": "Generate SWI",
+      "description": "Compute susceptibility-weighted images from magnitude and phase.",
+      "type": "boolean",
+      "required": true,
+      "default-value": true,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_SWI#"
+    },
+    {
+      "name": "do-t2starmap",
+      "label": "Generate T2* map",
+      "description": "Quantitative relaxation time in seconds, distinct from T2starw magnitude. Requires at least three equally spaced magnitude echoes.",
+      "type": "boolean",
+      "required": true,
+      "default-value": true,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_T2STARMAP#"
+    },
+    {
+      "name": "do-r2starmap",
+      "label": "Generate R2* map",
+      "description": "Quantitative relaxation rate in 1/s. Requires at least three equally spaced magnitude echoes. QSMxT computes T2* and R2* together when either is enabled.",
+      "type": "boolean",
+      "required": true,
+      "default-value": true,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_R2STARMAP#"
     }
   ],
   "outputs": [
