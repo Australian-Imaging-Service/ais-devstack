@@ -1,5 +1,6 @@
 # XNAT GCS Archiver CronJob
-# Runs nightly at 2am: syncs local XNAT archive session files to GCS
+# Runs nightly at 2am: syncs local XNAT archive session files to GCS, then
+# offloads (symlinks) sessions whose newest local file is >= OFFLOAD_MIN_AGE_HOURS old
 #
 # Manual trigger:
 #   kubectl -n ais-xnat create job --from=cronjob/xnat-gcs-archiver xnat-manual-$(date +%s)
@@ -57,6 +58,8 @@ spec:
                   value: "local"
                 - name: OFFLOAD_AFTER_BACKUP
                   value: "1"
+                - name: OFFLOAD_MIN_AGE_HOURS
+                  value: "24"
                 - name: OFFLOAD_EXISTING_BACKUPS
                   value: "0"
                 - name: REPAIR_INCOMPLETE_BACKUPS

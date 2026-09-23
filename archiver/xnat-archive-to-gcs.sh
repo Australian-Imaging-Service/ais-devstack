@@ -28,6 +28,11 @@ REPAIR_INCOMPLETE_BACKUPS="${REPAIR_INCOMPLETE_BACKUPS:-0}"
 XNAT_ARCHIVE_ROOT="${XNAT_ARCHIVE_ROOT:-/data/xnat/archive}"
 OBJECT_STORE_MOUNT="${OBJECT_STORE_MOUNT:-/data/xnat/object-store}"
 OBJECT_STORE_LINK_PREFIX="${OBJECT_STORE_LINK_PREFIX:-${OBJECT_STORE_MOUNT}/sessions}"
+# Minimum time local session data must sit untouched on the XNAT disk before
+# it is offloaded. Younger sessions are still backed up every night, but keep
+# their local files and get no .backup_complete marker, so a later run
+# re-syncs and offloads them once they are old enough.
+OFFLOAD_MIN_AGE_HOURS="${OFFLOAD_MIN_AGE_HOURS:-24}"
 
 log() { echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -190,6 +195,22 @@ newest_local_mtime() {
     find "$session_dir" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1
 }
 
+# Succeeds when the session's newest local regular file is at least
+# OFFLOAD_MIN_AGE_HOURS old (or there are no local regular files left).
+offload_age_reached() {
+    local project="$1"
+    local label="$2"
+    local newest age min_age
+    newest=$(newest_local_mtime "$(local_session_dir "$project" "$label")")
+    [ -n "$newest" ] || return 0
+    age=$(( $(date +%s) - newest ))
+    min_age=$(( OFFLOAD_MIN_AGE_HOURS * 3600 ))
+    if [ "$age" -lt "$min_age" ]; then
+        log "DEFER: ${project}/${label} newest local file is $(( age / 3600 ))h old (< ${OFFLOAD_MIN_AGE_HOURS}h); keeping local copy"
+        return 1
+    fi
+}
+
 matching_object_file() {
     local candidate="$1"
     local local_size="$2"
@@ -343,6 +364,7 @@ SESSION_COUNT=$(echo "$SESSIONS_JSON" | jq '.ResultSet.Result | length')
 log "Found ${SESSION_COUNT} sessions to back up"
 
 BACKED_UP=0
+DEFERRED=0
 FAILED=0
 EXIT_STATUS=0
 
@@ -376,7 +398,10 @@ while IFS=$'\t' read -r project label session_id; do
         else
             log "SKIP: ${project}/${label} already backed up"
             if truthy "$OFFLOAD_EXISTING_BACKUPS"; then
-                if offload_session "$project" "$label"; then
+                if ! offload_age_reached "$project" "$label"; then
+                    DEFERRED=$((DEFERRED + 1))
+                    continue
+                elif offload_session "$project" "$label"; then
                     continue
                 elif truthy "$REPAIR_INCOMPLETE_BACKUPS"; then
                     log "WARN: Refreshing incomplete backup for ${project}/${label}"
@@ -465,6 +490,13 @@ while IFS=$'\t' read -r project label session_id; do
     fi
 
     if truthy "$OFFLOAD_AFTER_BACKUP"; then
+        if ! offload_age_reached "$project" "$label"; then
+            # Backed up, but too young to offload: no marker, so the next
+            # run re-syncs (incrementally) and offloads it.
+            DEFERRED=$((DEFERRED + 1))
+            rm -rf "$SESSION_WORK_DIR"
+            continue
+        fi
         if ! offload_session "$project" "$label"; then
             FAILED=$((FAILED + 1))
             rm -rf "$SESSION_WORK_DIR"
@@ -484,7 +516,7 @@ while IFS=$'\t' read -r project label session_id; do
     rm -rf "$SESSION_WORK_DIR"
 done < <(echo "$SESSIONS_JSON" | jq -r '.ResultSet.Result[] | [.project, .label, .ID] | @tsv')
 
-log "Backup complete: ${BACKED_UP} synced, ${FAILED} failures"
+log "Backup complete: ${BACKED_UP} synced, ${DEFERRED} deferred offloads (< ${OFFLOAD_MIN_AGE_HOURS}h old), ${FAILED} failures"
 if [ "$FAILED" -gt 0 ] && [ "${ARCHIVER_FAIL_ON_SESSION_ERRORS:-1}" != "0" ]; then
     EXIT_STATUS=1
 fi
