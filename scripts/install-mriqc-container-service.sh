@@ -213,6 +213,11 @@ require_bin base64
 for command_json in "${COMMAND_JSON_FILES[@]}"; do
   require_file "${command_json}"
   jq empty "${command_json}"
+  image="$(jq -r '.image // ""' "${command_json}")"
+  if [[ "${image}" == *:PENDING ]]; then
+    echo "Refusing to install: ${command_json} has placeholder image ${image}; set the published tag first" >&2
+    exit 1
+  fi
 done
 
 XNAT_ADMIN_PASSWORD="$(kubectl_cmd -n "${XNAT_NAMESPACE}" get secret "${XNAT_ADMIN_SECRET}" -o jsonpath='{.data.password}' | base64 -d)"

@@ -23,8 +23,8 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['qsmxt','run',str(root),'--qsm-algorithm','hdqsm','--unwrapping-algorithm','romeo','--bf-algorithm','ismv','--mask','magnitude,threshold:otsu','--no-inhomogeneity-correction','--do-swi','--do-t2starmap','--do-r2starmap','--n-procs','4','--clean-intermediates'],check=True)
     import numpy as np,nibabel as nib
     from pathlib import Path
-    from test_qsmxt_minip import repair_derivatives
-    repair_derivatives(root / 'derivatives/qsmxt')
+    from test_qsmxt_minip import check_derivatives
+    assert check_derivatives(root / 'derivatives/qsmxt') == 0, 'QSMxT wrote a malformed minIP'
     p=root / 'derivatives/qsmxt/sub-01/anat'
     def read(s):return nib.load(p/f'sub-01_{s}.nii').get_fdata()
     r=read('R2starmap');t=read('T2starmap');s=read('swi');m=read('part-mag_T2starw');mask=read('mask')>0
@@ -45,4 +45,6 @@ with tempfile.TemporaryDirectory() as tmp:
     assert mip.shape == (s.shape[0], s.shape[1], s.shape[2] - 6)
     expected = np.stack([s[:, :, k:k+7].min(axis=2) for k in range(s.shape[2]-6)], axis=2)
     np.testing.assert_array_equal(mip, expected)
+    swi_affine = nib.load(p / 'sub-01_swi.nii').affine
+    np.testing.assert_allclose(mip_image.affine[:3, 3], (swi_affine @ [0, 0, 3, 1])[:3])
     print('minIP payload, dimensions, and projection values verified.')

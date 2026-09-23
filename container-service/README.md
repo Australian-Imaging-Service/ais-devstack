@@ -38,7 +38,7 @@ The installer loads:
 - `commands/aslprep-session.json` - `pennlinc/aslprep:26.0.3`
   participant-level ASLPrep command through `xnat2bids`, enabled site-wide for
   `xnat:mrSessionData`.
-- `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_9.19.1:20260914`
+- `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_9.22.0:PENDING`
   session-level QSMxT command with internal DICOM-to-BIDS conversion, enabled site-wide for
   `xnat:mrSessionData`.
 - `commands/musclemap-scan.json` - Neurodesk `vnmd/musclemap_1.3.45:20260701`
@@ -74,9 +74,9 @@ output that cannot be generated produces a warning in the container log.
 it is not a quantitative relaxation map. `*_T2starmap.nii` contains seconds,
 and `*_R2starmap.nii` contains inverse seconds. SWI uses magnitude and phase. Its `minIP` is a sliding seven-slice minimum
 projection: an input with 144 slices produces 138 projected slices, positioned
-at their slab centres. The prepared 9.19.1-ais.3 wrapper corrects QSMxT 9.19.1's
-malformed minIP headers and verifies the full NIfTI payload before upload.
-This minIP update is awaiting deployment approval.
+at their slab centres. QSMxT 9.19.1–9.21.x wrote malformed minIP headers
+(QSMxT#211, fixed in 9.22.0); the wrapper reads every minIP's full payload
+and drops any malformed one before upload.
 
 The scan-link sync runs every 15 minutes and links generated maps to the source
 phase scan as `QSM`, `SWI` (including minimum-intensity projections), `T2STAR`,
@@ -89,7 +89,7 @@ phantom in the installed image:
 
 ```bash
 sudo docker run --rm --network none --cpus 4 --memory 4g \
-  -v "$PWD:/repo:ro" --entrypoint bash vnmd/qsmxt_9.19.1:20260914 \
+  -v "$PWD:/repo:ro" --entrypoint bash vnmd/qsmxt_9.22.0:PENDING \
   -lc 'python3 -m unittest discover -s /repo/tests -p "test_qsmxt*.py" && python3 /repo/tests/qsmxt_phantom.py'
 ```
 
