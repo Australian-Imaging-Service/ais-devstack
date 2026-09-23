@@ -32,3 +32,4 @@ jupyterhub/5-jupyterhub-values.yaml
 jupyterhub/*.jar
 jupyterhub/neurodesk/values-devstack.yaml
 jupyterhub/neurodesk/.chart/
+__pycache__/

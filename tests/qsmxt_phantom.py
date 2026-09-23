@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory() as tmp:
       Path(str(base)+'.json').write_text(json.dumps({'EchoTime':te,'MagneticFieldStrength':3.,'SeriesNumber':2 if part=='phase' else 1,'Units':'rad' if part=='phase' else 'arbitrary'}))
     
     import subprocess
-    subprocess.run(['qsmxt','run',str(root),'--qsm-algorithm','hdqsm','--unwrapping-algorithm','romeo','--bf-algorithm','ismv','--mask','magnitude,threshold:otsu','--no-inhomogeneity-correction','--do-swi','--do-t2starmap','--do-r2starmap','--n-procs','4','--clean-intermediates'],check=True)
+    subprocess.run(['qsmxt','run',str(root),'--qsm-algorithm','hdqsm','--unwrapping-algorithm','romeo','--bf-algorithm','ismv','--mask','magnitude,threshold:otsu','--no-inhomogeneity-correction','--do-swi','--do-smwi','--do-t2starmap','--do-r2starmap','--n-procs','4','--clean-intermediates'],check=True)
     import numpy as np,nibabel as nib
     from pathlib import Path
     from test_qsmxt_minip import check_derivatives
@@ -48,3 +48,9 @@ with tempfile.TemporaryDirectory() as tmp:
     swi_affine = nib.load(p / 'sub-01_swi.nii').affine
     np.testing.assert_allclose(mip_image.affine[:3, 3], (swi_affine @ [0, 0, 3, 1])[:3])
     print('minIP payload, dimensions, and projection values verified.')
+
+    for kind in ('paramagnetic', 'diamagnetic'):
+        smwi = nib.load(p / f'sub-01_desc-{kind}_smwi.nii'); smip = nib.load(p / f'sub-01_desc-{kind}_minIP.nii')
+        assert smwi.shape == s.shape and smip.shape[:2] == s.shape[:2] and 1 <= smip.shape[2] < s.shape[2]
+        assert np.isfinite(smip.get_fdata()).all()
+    print('SMWI paramagnetic/diamagnetic images and minIPs verified.')

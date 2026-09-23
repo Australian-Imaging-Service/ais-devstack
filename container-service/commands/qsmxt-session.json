@@ -2,13 +2,13 @@
   "name": "qsmxt-bids",
   "label": "QSMxT",
   "description": "Runs Neurodesk QSMxT 9.x on an XNAT MR session. The session's DICOM scans are mounted directly and QSMxT converts them to BIDS internally (qsmxt dicom-convert) before running the QSM pipeline, so no pre-existing NIFTI or BIDS scan resources are required.",
-  "version": "9.22.0-ais.1",
+  "version": "9.22.0-ais.2",
   "schema-version": "1.0",
   "type": "docker",
-  "image": "vnmd/qsmxt_9.22.0:PENDING",
+  "image": "vnmd/qsmxt_9.22.0:20260923",
   "index": "https://index.docker.io/v1/",
   "info-url": "https://qsmxt.github.io/QSMxT/",
-  "command-line": "bash -lc 'set -euo pipefail\ncase \"$QSMXT_PREMADE\" in custom|romeo-resharp-rts|romeo-ismv-hdqsm|romeo-resharp-tikhonov|romeo-resharp-tv|romeo-resharp-hdqsm|romeo-ismv-rts|romeo-ismv-whqsm|romeo-sharp-whqsm|romeo-resharp-whqsm|romeo-sharp-tikhonov|qsmart|tgv|autoqsm|nextqsm|iqsm|iqsm-plus|default|gre|epi|bet|fast|body) ;; *) echo \"Invalid premade: $QSMXT_PREMADE\" >&2; exit 2;; esac\ncase \"$QSMXT_ALGORITHM\" in whqsm|hdqsm|rts|tv|tkd|tsvd|tgv|tikhonov|nltv|medi|ilsqr|qsmart|tfi|ndi|fansi|fansi-tgv|l1qsm|amp-pe|xqsm|qsmnet|qsmnet-plus|autoqsm|qsmgan|ir2qsm|lpcnn|modl-qsm|nextqsm|iqsm|iqsm-plus) ;; *) echo \"Invalid qsm-algorithm: $QSMXT_ALGORITHM\" >&2; exit 2;; esac\ncase \"$QSMXT_UNWRAPPING\" in romeo|laplacian) ;; *) echo \"Invalid unwrapping-algorithm: $QSMXT_UNWRAPPING\" >&2; exit 2;; esac\ncase \"$QSMXT_BACKGROUND\" in vsharp|pdf|lbv|ismv|sharp|resharp|harperella|iharperella|bfrnet|iqfm) ;; *) echo \"Invalid bf-algorithm: $QSMXT_BACKGROUND\" >&2; exit 2;; esac\ncase \"$QSMXT_MASKING_INPUT\" in magnitude|magnitude-first|magnitude-last|phase-quality) ;; *) echo \"Invalid masking-input: $QSMXT_MASKING_INPUT\" >&2; exit 2;; esac\ncase \"$QSMXT_MASK_PRESET\" in bet|robust-threshold) ;; *) echo \"Invalid mask-preset: $QSMXT_MASK_PRESET\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_SWI\" in true|false) ;; *) echo \"Invalid do-swi: $QSMXT_DO_SWI\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_T2STAR\" in true|false) ;; *) echo \"Invalid do-t2starmap: $QSMXT_DO_T2STAR\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_R2STAR\" in true|false) ;; *) echo \"Invalid do-r2starmap: $QSMXT_DO_R2STAR\" >&2; exit 2;; esac\nmkdir -p /work/home /work/matplotlib /work/bids /output\necho \"Converting DICOMs to BIDS...\"\nqsmxt dicom-convert /input /work/bids || echo \"WARNING: one or more series failed to convert; continuing with the series that succeeded\" >&2\nif ! find /work/bids -name '\"'\"'*part-phase*.nii*'\"'\"' | grep -q .; then echo \"No QSM-compatible series (multi-echo GRE with phase) found after DICOM conversion\" >&2; exit 3; fi\nargs=(/work/bids --clean-intermediates --n-procs 8)\ncase \"$QSMXT_PREMADE\" in\ncustom) args+=(--qsm-algorithm \"$QSMXT_ALGORITHM\" --unwrapping-algorithm \"$QSMXT_UNWRAPPING\" --bf-algorithm \"$QSMXT_BACKGROUND\");;\nromeo-resharp-rts) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm rts);;\nromeo-ismv-hdqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm hdqsm);;\nromeo-resharp-tikhonov) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm tikhonov);;\nromeo-resharp-tv) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm tv);;\nromeo-resharp-hdqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm hdqsm);;\nromeo-ismv-rts) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm rts);;\nromeo-ismv-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm whqsm);;\nromeo-sharp-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm sharp --qsm-algorithm whqsm);;\nromeo-resharp-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm whqsm);;\nromeo-sharp-tikhonov) args+=(--unwrapping-algorithm romeo --bf-algorithm sharp --qsm-algorithm tikhonov);;\nqsmart) args+=(--unwrapping-algorithm romeo --qsm-algorithm qsmart);;\ntgv) args+=(--unwrapping-algorithm romeo --qsm-algorithm tgv);;\nautoqsm) args+=(--unwrapping-algorithm romeo --qsm-algorithm autoqsm);;\nnextqsm) args+=(--unwrapping-algorithm romeo --qsm-algorithm nextqsm);;\niqsm) args+=(--qsm-algorithm iqsm);;\niqsm-plus) args+=(--qsm-algorithm iqsm-plus);;\ndefault|gre) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nepi) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --inhomogeneity-correction);;\nbet) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nfast) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm vsharp --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nbody) args+=(--qsm-algorithm tgv --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nesac\ncase \"$QSMXT_PREMADE\" in\n  default|gre|epi|bet|fast|body) ;;\n  *) args+=(--mask-preset \"$QSMXT_MASK_PRESET\" --masking-input \"$QSMXT_MASKING_INPUT\" --no-inhomogeneity-correction);;\nesac\n[[ \"$QSMXT_DO_SWI\" == false ]] || args+=(--do-swi)\n[[ \"$QSMXT_DO_T2STAR\" == false ]] || args+=(--do-t2starmap)\n[[ \"$QSMXT_DO_R2STAR\" == false ]] || args+=(--do-r2starmap)\nprintf '\"'\"'Running QSMxT: '\"'\"'; printf '\"'\"'%q '\"'\"' \"${args[@]}\"; printf '\"'\"'\\n'\"'\"'\necho \"T2starw is magnitude contrast; quantitative outputs are T2starmap (seconds) and R2starmap (1/s). Fitting requires at least three equally spaced echoes.\"\necho \"Running QSMxT...\"\nqsmxt run \"${args[@]}\"\nif ! find /work/bids/derivatives/qsmxt -name '\"'\"'*_Chimap.nii*'\"'\"' 2>/dev/null | grep -q .; then echo \"QSMxT produced no Chimap output (no QSM-compatible series?)\" >&2; exit 3; fi\npython3 - /work/bids/derivatives/qsmxt <<'\"'\"'PYMINIP'\"'\"'\n\"\"\"Drop malformed SWI minIPs before upload (QSMxT#211, fixed upstream in 9.22.0).\"\"\"\nfrom pathlib import Path\nimport sys\n\nimport nibabel as nib\nimport numpy as np\n\nWINDOW = 7  # default QSMxT sliding minimum-projection depth\n\n\ndef minip_problem(swi_path, minip_path):\n    swi = nib.load(swi_path)\n    minip = nib.load(minip_path)\n    nz = swi.shape[2]\n    if minip.shape[:2] != swi.shape[:2] or (nz >= WINDOW and minip.shape[2] != nz - WINDOW + 1):\n        return f\"shape {minip.shape} does not match a {WINDOW}-slice projection of SWI {swi.shape}\"\n    try:\n        # Read the complete payload: a header-only load missed this bug.\n        np.asanyarray(minip.dataobj)\n    except Exception as exc:\n        return f\"payload unreadable ({exc})\"\n    return None\n\n\ndef check_derivatives(root):\n    bad = 0\n    for minip in Path(root).glob(\"sub-*/**/anat/*_minIP.nii*\"):\n        if not (minip.name.endswith(\".nii\") or minip.name.endswith(\".nii.gz\")):\n            continue\n        swi = minip.with_name(minip.name.replace(\"_minIP.nii\", \"_swi.nii\"))\n        problem = minip_problem(swi, minip) if swi.exists() else \"no matching SWI\"\n        if problem:\n            bad += 1\n            print(f\"WARNING: removing malformed minIP {minip.name}: {problem}\", file=sys.stderr)\n            minip.unlink()\n            minip.with_name(minip.name.removesuffix(\".gz\").removesuffix(\".nii\") + \".json\").unlink(missing_ok=True)\n    return bad\n\n\nif __name__ == \"__main__\":\n    check_derivatives(sys.argv[1])\nPYMINIP\necho \"Backfilling source metadata into derivative sidecars...\"\npython3 - /work/bids <<'\"'\"'PYBACKFILL'\"'\"'\nimport json, re, sys\nfrom pathlib import Path\nbids = Path(sys.argv[1]); deriv = bids / \"derivatives\" / \"qsmxt\"\ndef ents(name):\n    return dict(re.findall(r\"(?:^|_)(sub|ses|acq|run)-([A-Za-z0-9]+)\", name))\nsrc = {}\nfor pat in (\"sub-*/ses-*/anat/*part-phase*.json\", \"sub-*/anat/*part-phase*.json\"):\n    for j in bids.glob(pat):\n        src.setdefault(tuple(sorted(ents(j.name).items())), j)\npatched = 0\nfor nii in deriv.glob(\"sub-*/**/anat/*.nii*\"):\n    if not (nii.name.endswith(\".nii\") or nii.name.endswith(\".nii.gz\")): continue\n    cj = nii.with_name(nii.name.removesuffix(\".gz\").removesuffix(\".nii\") + \".json\")\n    s = src.get(tuple(sorted(ents(cj.name).items())))\n    if s is None:\n        print(\"WARNING: no source phase sidecar for %s\" % cj.name, file=sys.stderr); continue\n    sd = json.loads(s.read_text()); cd = json.loads(cj.read_text()) if cj.exists() else {}\n    for k in (\"SeriesNumber\", \"SeriesDescription\"):\n        if k in sd and k not in cd: cd[k] = sd[k]\n    cj.write_text(json.dumps(cd, indent=2)); patched += 1\nprint(\"Backfilled SeriesNumber into %d derivative sidecar(s)\" % patched)\nPYBACKFILL\nfor spec in \"$QSMXT_DO_SWI:swi\" \"$QSMXT_DO_T2STAR:T2starmap\" \"$QSMXT_DO_R2STAR:R2starmap\"; do\n  if [[ \"${spec%%:*}\" == true ]] && ! find /work/bids/derivatives/qsmxt -name \"*_${spec#*:}.nii*\" -print -quit | grep -q .; then\n    echo \"WARNING: requested ${spec#*:} was not produced. Check magnitude/phase pairing, echo count, echo spacing, and QSMxT logs.\" >&2\n  fi\ndone\ncp -a /work/bids/derivatives/. /output/'",
+  "command-line": "bash -lc 'set -euo pipefail\ncase \"$QSMXT_PREMADE\" in custom|romeo-resharp-rts|romeo-ismv-hdqsm|romeo-resharp-tikhonov|romeo-resharp-tv|romeo-resharp-hdqsm|romeo-ismv-rts|romeo-ismv-whqsm|romeo-sharp-whqsm|romeo-resharp-whqsm|romeo-sharp-tikhonov|qsmart|tgv|autoqsm|nextqsm|iqsm|iqsm-plus|default|gre|epi|bet|fast|body) ;; *) echo \"Invalid premade: $QSMXT_PREMADE\" >&2; exit 2;; esac\ncase \"$QSMXT_ALGORITHM\" in whqsm|hdqsm|rts|tv|tkd|tsvd|tgv|tikhonov|nltv|medi|ilsqr|qsmart|tfi|ndi|fansi|fansi-tgv|l1qsm|amp-pe|xqsm|qsmnet|qsmnet-plus|autoqsm|qsmgan|ir2qsm|lpcnn|modl-qsm|nextqsm|iqsm|iqsm-plus|lsqr|heidi) ;; *) echo \"Invalid qsm-algorithm: $QSMXT_ALGORITHM\" >&2; exit 2;; esac\ncase \"$QSMXT_UNWRAPPING\" in romeo|laplacian) ;; *) echo \"Invalid unwrapping-algorithm: $QSMXT_UNWRAPPING\" >&2; exit 2;; esac\ncase \"$QSMXT_BACKGROUND\" in vsharp|pdf|lbv|ismv|sharp|resharp|harperella|iharperella|bfrnet|iqfm) ;; *) echo \"Invalid bf-algorithm: $QSMXT_BACKGROUND\" >&2; exit 2;; esac\ncase \"$QSMXT_MASKING_INPUT\" in magnitude|magnitude-first|magnitude-last|phase-quality) ;; *) echo \"Invalid masking-input: $QSMXT_MASKING_INPUT\" >&2; exit 2;; esac\ncase \"$QSMXT_MASK_PRESET\" in bet|robust-threshold|bet-and-phase|hd-bet) ;; *) echo \"Invalid mask-preset: $QSMXT_MASK_PRESET\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_SWI\" in true|false) ;; *) echo \"Invalid do-swi: $QSMXT_DO_SWI\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_T2STAR\" in true|false) ;; *) echo \"Invalid do-t2starmap: $QSMXT_DO_T2STAR\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_R2STAR\" in true|false) ;; *) echo \"Invalid do-r2starmap: $QSMXT_DO_R2STAR\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_SMWI\" in true|false) ;; *) echo \"Invalid do-smwi: $QSMXT_DO_SMWI\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_R2PRIME\" in true|false) ;; *) echo \"Invalid do-r2primemap: $QSMXT_DO_R2PRIME\" >&2; exit 2;; esac\ncase \"$QSMXT_TWO_PASS\" in true|false) ;; *) echo \"Invalid two-pass: $QSMXT_TWO_PASS\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_SEGMENTATION\" in true|false) ;; *) echo \"Invalid do-segmentation: $QSMXT_DO_SEGMENTATION\" >&2; exit 2;; esac\ncase \"$QSMXT_DO_ANALYSIS\" in true|false) ;; *) echo \"Invalid do-analysis: $QSMXT_DO_ANALYSIS\" >&2; exit 2;; esac\ncase \"$QSMXT_R2PRIME_STRATEGY\" in auto|mese|r2primenet) ;; *) echo \"Invalid r2prime-strategy: $QSMXT_R2PRIME_STRATEGY\" >&2; exit 2;; esac\nmkdir -p /work/home /work/matplotlib /work/bids /output\necho \"Converting DICOMs to BIDS...\"\nqsmxt dicom-convert /input /work/bids || echo \"WARNING: one or more series failed to convert; continuing with the series that succeeded\" >&2\nif ! find /work/bids -name '\"'\"'*part-phase*.nii*'\"'\"' | grep -q .; then echo \"No QSM-compatible series (multi-echo GRE with phase) found after DICOM conversion\" >&2; exit 3; fi\nargs=(/work/bids --n-procs 8)\ncase \"$QSMXT_PREMADE\" in\ncustom) args+=(--qsm-algorithm \"$QSMXT_ALGORITHM\" --unwrapping-algorithm \"$QSMXT_UNWRAPPING\" --bf-algorithm \"$QSMXT_BACKGROUND\");;\nromeo-resharp-rts) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm rts);;\nromeo-ismv-hdqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm hdqsm);;\nromeo-resharp-tikhonov) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm tikhonov);;\nromeo-resharp-tv) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm tv);;\nromeo-resharp-hdqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm hdqsm);;\nromeo-ismv-rts) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm rts);;\nromeo-ismv-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm ismv --qsm-algorithm whqsm);;\nromeo-sharp-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm sharp --qsm-algorithm whqsm);;\nromeo-resharp-whqsm) args+=(--unwrapping-algorithm romeo --bf-algorithm resharp --qsm-algorithm whqsm);;\nromeo-sharp-tikhonov) args+=(--unwrapping-algorithm romeo --bf-algorithm sharp --qsm-algorithm tikhonov);;\nqsmart) args+=(--unwrapping-algorithm romeo --qsm-algorithm qsmart);;\ntgv) args+=(--unwrapping-algorithm romeo --qsm-algorithm tgv);;\nautoqsm) args+=(--unwrapping-algorithm romeo --qsm-algorithm autoqsm);;\nnextqsm) args+=(--unwrapping-algorithm romeo --qsm-algorithm nextqsm);;\niqsm) args+=(--qsm-algorithm iqsm);;\niqsm-plus) args+=(--qsm-algorithm iqsm-plus);;\ndefault|gre) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nepi) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --inhomogeneity-correction);;\nbet) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nfast) args+=(--qsm-algorithm rts --unwrapping-algorithm romeo --bf-algorithm vsharp --mask-preset bet --masking-input magnitude --no-inhomogeneity-correction);;\nbody) args+=(--qsm-algorithm tgv --unwrapping-algorithm romeo --bf-algorithm pdf --mask-preset robust-threshold --masking-input phase-quality --no-inhomogeneity-correction);;\nesac\ncase \"$QSMXT_PREMADE\" in\n  default|gre|epi|bet|fast|body) ;;\n  *) args+=(--mask-preset \"$QSMXT_MASK_PRESET\" --no-inhomogeneity-correction)\n     case \"$QSMXT_MASK_PRESET\" in bet|robust-threshold) args+=(--masking-input \"$QSMXT_MASKING_INPUT\");; esac;;\nesac\n[[ \"$QSMXT_DO_SWI\" == false ]] || args+=(--do-swi)\n[[ \"$QSMXT_DO_T2STAR\" == false ]] || args+=(--do-t2starmap)\n[[ \"$QSMXT_DO_R2STAR\" == false ]] || args+=(--do-r2starmap)\n[[ \"$QSMXT_DO_SMWI\" == false ]] || args+=(--do-smwi)\n[[ \"$QSMXT_DO_R2PRIME\" == false ]] || args+=(--do-r2primemap --r2prime-strategy \"$QSMXT_R2PRIME_STRATEGY\")\n[[ \"$QSMXT_TWO_PASS\" == false ]] || args+=(--two-pass)\n[[ \"$QSMXT_DO_SEGMENTATION\" == false ]] || args+=(--do-segmentation)\n[[ \"$QSMXT_DO_ANALYSIS\" == false ]] || args+=(--do-analysis)\nprintf '\"'\"'Running QSMxT: '\"'\"'; printf '\"'\"'%q '\"'\"' \"${args[@]}\"; printf '\"'\"'\\n'\"'\"'\necho \"T2starw is magnitude contrast; quantitative outputs are T2starmap (seconds) and R2starmap (1/s). Fitting requires at least three equally spaced echoes.\"\necho \"Running QSMxT...\"\nqsmxt run \"${args[@]}\"\nfind /work/bids/derivatives/qsmxt/workflow -type f ! -name provenance.json -delete 2>/dev/null || true\nif ! find /work/bids/derivatives/qsmxt -name '\"'\"'*_Chimap.nii*'\"'\"' 2>/dev/null | grep -q .; then echo \"QSMxT produced no Chimap output (no QSM-compatible series?)\" >&2; exit 3; fi\npython3 - /work/bids/derivatives/qsmxt <<'\"'\"'PYMINIP'\"'\"'\n\"\"\"Drop malformed minIPs before upload (QSMxT#211, fixed upstream in 9.22.0).\"\"\"\nfrom pathlib import Path\nimport sys\n\nimport nibabel as nib\nimport numpy as np\n\n\ndef projection_source(minip):\n    # SWI minIPs project *_swi; SMWI writes desc-paramagnetic/diamagnetic minIPs of *_smwi.\n    for suffix in (\"_swi.nii\", \"_smwi.nii\"):\n        for ext in (\"\", \".gz\"):\n            candidate = minip.with_name(minip.name.split(\"_minIP.nii\")[0] + suffix + ext)\n            if candidate.exists():\n                return candidate\n    return None\n\n\ndef minip_problem(minip, source):\n    image = nib.load(minip)\n    try:\n        # Read the complete payload: a header-only load missed this bug.\n        np.asanyarray(image.dataobj)\n    except Exception as exc:\n        return f\"payload unreadable ({exc})\"\n    if source is not None:\n        shape = nib.load(source).shape\n        if len(image.shape) != 3 or image.shape[:2] != shape[:2] or not 1 <= image.shape[2] <= shape[2]:\n            return f\"shape {image.shape} is not a slab projection of {source.name} {shape}\"\n    return None\n\n\ndef check_derivatives(root):\n    bad = 0\n    for minip in Path(root).glob(\"sub-*/**/anat/*_minIP.nii*\"):\n        if not (minip.name.endswith(\".nii\") or minip.name.endswith(\".nii.gz\")):\n            continue\n        problem = minip_problem(minip, projection_source(minip))\n        if problem:\n            bad += 1\n            print(f\"WARNING: removing malformed minIP {minip.name}: {problem}\", file=sys.stderr)\n            minip.unlink()\n            minip.with_name(minip.name.removesuffix(\".gz\").removesuffix(\".nii\") + \".json\").unlink(missing_ok=True)\n    return bad\n\n\nif __name__ == \"__main__\":\n    check_derivatives(sys.argv[1])\nPYMINIP\necho \"Backfilling source metadata into derivative sidecars...\"\npython3 - /work/bids <<'\"'\"'PYBACKFILL'\"'\"'\nimport json, re, sys\nfrom pathlib import Path\nbids = Path(sys.argv[1]); deriv = bids / \"derivatives\" / \"qsmxt\"\ndef ents(name):\n    return dict(re.findall(r\"(?:^|_)(sub|ses|acq|run)-([A-Za-z0-9]+)\", name))\nsrc = {}\nfor pat in (\"sub-*/ses-*/anat/*part-phase*.json\", \"sub-*/anat/*part-phase*.json\"):\n    for j in bids.glob(pat):\n        src.setdefault(tuple(sorted(ents(j.name).items())), j)\npatched = 0\nfor nii in deriv.glob(\"sub-*/**/anat/*.nii*\"):\n    if not (nii.name.endswith(\".nii\") or nii.name.endswith(\".nii.gz\")): continue\n    cj = nii.with_name(nii.name.removesuffix(\".gz\").removesuffix(\".nii\") + \".json\")\n    s = src.get(tuple(sorted(ents(cj.name).items())))\n    if s is None:\n        print(\"WARNING: no source phase sidecar for %s\" % cj.name, file=sys.stderr); continue\n    sd = json.loads(s.read_text()); cd = json.loads(cj.read_text()) if cj.exists() else {}\n    for k in (\"SeriesNumber\", \"SeriesDescription\"):\n        if k in sd and k not in cd: cd[k] = sd[k]\n    cj.write_text(json.dumps(cd, indent=2)); patched += 1\nprint(\"Backfilled SeriesNumber into %d derivative sidecar(s)\" % patched)\nPYBACKFILL\nfor spec in \"$QSMXT_DO_SWI:swi\" \"$QSMXT_DO_T2STAR:T2starmap\" \"$QSMXT_DO_R2STAR:R2starmap\" \"$QSMXT_DO_SMWI:smwi\" \"$QSMXT_DO_R2PRIME:R2primemap\" \"$QSMXT_DO_SEGMENTATION:dseg\" \"$QSMXT_DO_ANALYSIS:qsmstats\"; do\n  if [[ \"${spec%%:*}\" == true ]] && ! find /work/bids/derivatives/qsmxt \\( -name \"*_${spec#*:}.nii*\" -o -name \"*_${spec#*:}.tsv\" \\) -print -quit | grep -q .; then\n    echo \"WARNING: requested ${spec#*:} was not produced. Check magnitude/phase pairing, echo count, echo spacing, and QSMxT logs.\" >&2\n  fi\ndone\ncp -a /work/bids/derivatives/. /output/'",
   "working-directory": "/work",
   "override-entrypoint": true,
   "reserve-memory": "8192",
@@ -25,7 +25,13 @@
     "QSMXT_MASK_PRESET": "#MASK_PRESET#",
     "QSMXT_DO_SWI": "#DO_SWI#",
     "QSMXT_DO_T2STAR": "#DO_T2STARMAP#",
-    "QSMXT_DO_R2STAR": "#DO_R2STARMAP#"
+    "QSMXT_DO_R2STAR": "#DO_R2STARMAP#",
+    "QSMXT_DO_SMWI": "#DO_SMWI#",
+    "QSMXT_DO_R2PRIME": "#DO_R2PRIMEMAP#",
+    "QSMXT_R2PRIME_STRATEGY": "#R2PRIME_STRATEGY#",
+    "QSMXT_TWO_PASS": "#TWO_PASS#",
+    "QSMXT_DO_SEGMENTATION": "#DO_SEGMENTATION#",
+    "QSMXT_DO_ANALYSIS": "#DO_ANALYSIS#"
   },
   "mounts": [
     {
@@ -114,7 +120,9 @@
         "modl-qsm",
         "nextqsm",
         "iqsm",
-        "iqsm-plus"
+        "iqsm-plus",
+        "lsqr",
+        "heidi"
       ],
       "replacement-key": "#QSM_ALGORITHM#",
       "description": "QSMxT inversion algorithm for the Custom pipeline preset. HD-QSM is the OpenRecon default for a fast reconstruction with good QSM-CI performance."
@@ -166,7 +174,7 @@
         "phase-quality"
       ],
       "replacement-key": "#MASKING_INPUT#",
-      "description": "Input used by Robust threshold and the threshold part of Combined. Magnitude is safer for single-echo acquisitions; phase quality is most useful with multiple echoes."
+      "description": "Input for the BET and Robust threshold mask presets. Magnitude is safer for single-echo acquisitions; phase quality is most useful with multiple echoes. Ignored by Combined and HD-BET."
     },
     {
       "name": "mask-preset",
@@ -176,10 +184,12 @@
       "default-value": "bet",
       "select-values": [
         "bet",
-        "robust-threshold"
+        "robust-threshold",
+        "bet-and-phase",
+        "hd-bet"
       ],
       "replacement-key": "#MASK_PRESET#",
-      "description": "Brain mask for Custom and OpenRecon presets. Legacy presets retain their original masks."
+      "description": "Brain mask for Custom and OpenRecon presets. Combined (bet-and-phase) intersects BET on the magnitude with a thresholded phase-quality map, as recommended by the ISMRM consensus; HD-BET is a deep-learning brain extraction. Legacy presets retain their original masks."
     },
     {
       "name": "do-swi",
@@ -213,6 +223,75 @@
       "true-value": "true",
       "false-value": "false",
       "replacement-key": "#DO_R2STARMAP#"
+    },
+    {
+      "name": "do-smwi",
+      "label": "Generate SMWI",
+      "description": "Susceptibility map-weighted imaging: weights the magnitude by a mask built from the susceptibility map, so contrast stays at the source. Writes paramagnetic and diamagnetic SMWI images, each with its own minIP.",
+      "type": "boolean",
+      "required": true,
+      "default-value": true,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_SMWI#"
+    },
+    {
+      "name": "do-r2primemap",
+      "label": "Generate R2' map",
+      "description": "R2' (= R2* - R2) in 1/s. Requires R2* fitting. See R2' source for whether it is measured or predicted.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_R2PRIMEMAP#"
+    },
+    {
+      "name": "r2prime-strategy",
+      "label": "R2' source",
+      "type": "select-one",
+      "required": true,
+      "default-value": "auto",
+      "select-values": [
+        "auto",
+        "mese",
+        "r2primenet"
+      ],
+      "replacement-key": "#R2PRIME_STRATEGY#",
+      "description": "auto measures R2' from a multi-echo spin-echo scan when the session has one and otherwise predicts it with R2PRIMEnet; mese only measures (no output without MESE); r2primenet always predicts. A prediction is an estimate, not a measurement."
+    },
+    {
+      "name": "two-pass",
+      "label": "Two-pass artefact reduction",
+      "description": "Reconstruct a second time on a mask that keeps holes at strong susceptibility sources (air-tissue interfaces, haemorrhage, implants) to keep their streaking out of the rest of the brain. Roughly doubles background removal and inversion time and can be worse where the holes were not artefactual. The single-pass map is kept as desc-singlepass_Chimap.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#TWO_PASS#"
+    },
+    {
+      "name": "do-segmentation",
+      "label": "Segment brain (SynthSeg)",
+      "description": "Whole-brain FreeSurfer-labelled segmentation from the GRE magnitude with SynthSeg (dseg.nii plus label table). Needs no T1w and no registration.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_SEGMENTATION#"
+    },
+    {
+      "name": "do-analysis",
+      "label": "Per-structure susceptibility statistics",
+      "description": "Median, mean, SD and 5th/95th percentile susceptibility per segmented structure (qsmstats.tsv). Implies segmentation.",
+      "type": "boolean",
+      "required": true,
+      "default-value": false,
+      "true-value": "true",
+      "false-value": "false",
+      "replacement-key": "#DO_ANALYSIS#"
     }
   ],
   "outputs": [

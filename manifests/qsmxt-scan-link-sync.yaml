@@ -1,5 +1,7 @@
 # QSMxT scan-level output linker
-# Chimap -> QSM; swi/minIP -> SWI; T2starmap -> T2STAR; R2starmap -> R2STAR.
+# Chimap (incl. two-pass desc-singlepass) -> QSM; swi/minIP -> SWI;
+# SMWI desc-paramagnetic/diamagnetic smwi+minIP -> SMWI; T2starmap -> T2STAR;
+# R2starmap -> R2STAR; R2primemap -> R2PRIME; dseg (+ label .tsv) -> SEG.
 # T2starw is combined magnitude contrast and is deliberately not a fitted map.
 #
 # Session-level outputs are linked back to the source phase scan using the
@@ -37,8 +39,12 @@ data:
     ARCHIVE_ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/xnat/archive"))
     SOURCE_RESOURCE = os.environ.get("SOURCE_RESOURCE", "QSMXT")
     TARGET_RESOURCE = os.environ.get("TARGET_RESOURCE", "QSM")
+    # Keyed by BIDS suffix, or by "desc-<label>_<suffix>" where the desc changes the map.
     OUTPUT_RESOURCES = {"Chimap": TARGET_RESOURCE, "swi": "SWI", "minIP": "SWI",
-                        "T2starmap": "T2STAR", "R2starmap": "R2STAR"}
+                        "T2starmap": "T2STAR", "R2starmap": "R2STAR",
+                        "R2primemap": "R2PRIME", "dseg": "SEG",
+                        "desc-paramagnetic_smwi": "SMWI", "desc-diamagnetic_smwi": "SMWI",
+                        "desc-paramagnetic_minIP": "SMWI", "desc-diamagnetic_minIP": "SMWI"}
     DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
 
     AUTH = base64.b64encode(f"{USER}:{PASS}".encode()).decode()
@@ -160,7 +166,10 @@ data:
             if not (nii.name.endswith(".nii") or nii.name.endswith(".nii.gz")):
                 continue
             basename = nii.name.removesuffix(".gz").removesuffix(".nii")
-            target_resource = OUTPUT_RESOURCES.get(basename.rsplit("_", 1)[-1])
+            entities = basename.split("_")
+            descs = [e for e in entities[:-1] if e.startswith("desc-")]
+            target_resource = OUTPUT_RESOURCES.get(
+                "_".join(descs[-1:] + entities[-1:]), OUTPUT_RESOURCES.get(entities[-1]))
             if target_resource is None:
                 continue
             sidecar = nii.with_name(basename + ".json")
@@ -170,7 +179,11 @@ data:
                 errors.append(f"{nii}: cannot read SeriesNumber ({exc})")
                 continue
             key = (session_root, str(series_number), target_resource)
-            groups.setdefault(key, []).extend([nii, sidecar])
+            files = [nii, sidecar]
+            label_table = nii.with_name(basename + ".tsv")  # dseg lookup table
+            if label_table.exists():
+                files.append(label_table)
+            groups.setdefault(key, []).extend(files)
 
     for (session_root, scan_id, target_resource), files in sorted(groups.items()):
         project = session_root.parents[1].name
