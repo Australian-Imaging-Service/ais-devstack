@@ -39,7 +39,7 @@ The installer loads:
   participant-level ASLPrep command through `xnat2bids`, enabled site-wide for
   `xnat:mrSessionData`.
 - `commands/qsmxt-session.json` - Neurodesk `vnmd/qsmxt_9.19.1:20260914`
-  session-level QSMxT command through `xnat2bids`, enabled site-wide for
+  session-level QSMxT command with internal DICOM-to-BIDS conversion, enabled site-wide for
   `xnat:mrSessionData`.
 - `commands/musclemap-scan.json` - Neurodesk `vnmd/musclemap_1.3.45:20260701`
   scan-level and session-level MuscleMap wrappers. They run on the first NIfTI
@@ -52,14 +52,47 @@ The installer loads:
 
 MRIQC, fMRIPrep, ASLPrep, QSMxT, and session-level MuscleMap store outputs back
 on the session as resources labeled `MRIQC`, `FMRIPREP`, `ASLPREP`, `QSMXT`,
-and `MUSCLEMAP`. They do not convert raw DICOM into BIDS. Run DICOM to BIDS
-first, or otherwise provide matching scan-level `NIFTI` and `BIDS` resources.
+and `MUSCLEMAP`. QSMxT converts session DICOMs internally. For the other BIDS apps, run DICOM
+to BIDS first or provide matching scan-level `NIFTI` and `BIDS` resources.
 fMRIPrep and ASLPrep run with `--fs-no-reconall` by default. fMRIPrep 25.2.5
 still performs an unconditional FreeSurfer license validation, so its local
 image includes the public license from Neurodesk's FreeSurfer recipe. QSMxT
-expects BIDS-compatible QSM inputs, typically `part-mag` and `part-phase`
-`T2starw` files with JSON sidecars; it copies the staged BIDS dataset to
-writable work storage and uploads the generated `derivatives`.
+converts the session's magnitude/phase DICOMs to BIDS in writable work storage
+and uploads the generated derivatives to the session's `QSMXT` resource.
+
+QSMxT's **Pipeline preset** dropdown matches the OpenRecon algorithm presets.
+Choose `custom` to set **QSM algorithm**, **Unwrap**, and **Background removal**
+individually (defaults: HD-QSM, ROMEO, iSMV). Presets override these three
+controls. BET and magnitude are the default mask settings; legacy `gre`, `epi`,
+`bet`, `fast`, and `body` presets retain their previous mask/algorithm choices.
+
+**Generate SWI**, **Generate T2* map**, and **Generate R2* map** default to on.
+T2*/R2* fitting needs at least three equally spaced magnitude echoes. QSMxT
+computes both fitted maps when either fitting option is enabled. A requested
+output that cannot be generated produces a warning in the container log.
+`*_part-mag_T2starw.nii` is the combined magnitude image with T2* contrast;
+it is not a quantitative relaxation map. `*_T2starmap.nii` contains seconds,
+and `*_R2starmap.nii` contains inverse seconds. SWI uses magnitude and phase. Its `minIP` is a sliding seven-slice minimum
+projection: an input with 144 slices produces 138 projected slices, positioned
+at their slab centres. The prepared 9.19.1-ais.3 wrapper corrects QSMxT 9.19.1's
+malformed minIP headers and verifies the full NIfTI payload before upload.
+This minIP update is awaiting deployment approval.
+
+The scan-link sync runs every 15 minutes and links generated maps to the source
+phase scan as `QSM`, `SWI` (including minimum-intensity projections), `T2STAR`,
+and `R2STAR` resources. The session resource retains all derivatives. Existing
+runs must be rerun to generate maps that were previously disabled.
+
+Regression checks: `python3 -m unittest discover -s tests -p 'test_qsmxt*.py'`.
+For numerical validation against known T2*/R2* values, run the synthetic
+phantom in the installed image:
+
+```bash
+sudo docker run --rm --network none --cpus 4 --memory 4g \
+  -v "$PWD:/repo:ro" --entrypoint bash vnmd/qsmxt_9.19.1:20260914 \
+  -lc 'python3 -m unittest discover -s /repo/tests -p "test_qsmxt*.py" && python3 /repo/tests/qsmxt_phantom.py'
+```
+
 
 Scan-level MuscleMap and Spinal Cord Toolbox require scan-level `NIFTI`
 resources. If a `NIFTI` resource contains multiple NIfTI files, the wrappers
