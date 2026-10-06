@@ -1,5 +1,5 @@
 # XNAT Helm Chart Values for k3s deployment
-# Configured for Google OIDC authentication
+# Configured for Stanford OIDC authentication
 global:
   postgresql:
     auth:
@@ -68,7 +68,7 @@ xnat-web:
     container-service: []
     ohif-viewer: {}
     openid-auth-plugin:
-      - name: "Google Authentication"
+      - name: "Stanford Authentication"
         provider:
           id: stanford
         auth:

@@ -1,6 +1,6 @@
 # AIS-XNAT Deployment for k3s
 
-XNAT deployment on k3s with NFS-backed storage for the Australian Imaging Service.
+XNAT deployment on k3s with node-local storage for the Australian Imaging Service.
 
 ## Prerequisites
 
@@ -25,9 +25,9 @@ ais-devstack/
 │   └── values.yaml              # NFS server Helm chart values
 ├── plugins/
 │   └── container-service-*.jar  # XNAT plugins (auto-copied during install)
-├── jupyterhub/                  # JupyterHub layer (one neurodesk Helm chart)
-│   ├── INSTALL.sh               # JupyterHub orchestrator (infra + chart)
-│   ├── UNINSTALL.sh             # JupyterHub uninstall
+├── jupyterhub/                  # Stanford JupyterHub + optional Neurodesk chart
+│   ├── INSTALL.sh               # Stanford component installation sequence
+│   ├── UNINSTALL.sh             # Optional Neurodesk chart uninstall
 │   ├── 6-install-neurodesk.sh   # wrapper -> neurodesk/install.sh
 │   ├── neurodesk/               # the consolidated chart + devstack values
 │   └── ...                      # See jupyterhub/README.md
@@ -401,19 +401,19 @@ Install JupyterHub? (y/N): y
 
 **Option 2:** Install separately after XNAT is running:
 ```bash
-cd jupyterhub
-cp neurodesk/values-devstack.yaml.template neurodesk/values-devstack.yaml   # fill in secrets
-./INSTALL.sh
+./scripts/install-jupyterhub.sh
 ```
 
-The JupyterHub layer is the consolidated `neurodesk` Helm chart (see
-`jupyterhub/neurodesk/README.md`). `INSTALL.sh` installs the infra it needs
-(Longhorn, the NFS workspace, monitoring) and then the chart.
+Stanford keeps the standalone JupyterHub release, `5-jupyterhub-values.yaml`,
+and its existing component scripts and node-local archive mounts. Main's
+consolidated Neurodesk chart is available separately through
+`jupyterhub/6-install-neurodesk.sh` (see `jupyterhub/neurodesk/README.md`).
+Migrating Stanford requires porting its authentication and storage hooks first.
 
 ### Uninstall JupyterHub
 
 ```bash
-cd jupyterhub && ./UNINSTALL.sh        # JupyterHub layer only (keeps infra + XNAT)
+./scripts/uninstall-jupyterhub.sh      # Stanford cleanup; removes JupyterHub infrastructure
 ```
 
 ### Update JupyterHub from Upstream

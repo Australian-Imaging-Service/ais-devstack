@@ -1,0 +1,16 @@
+{
+  "webapps": {
+    "xnat-upload": {
+      "title": "XNAT Upload Tool",
+      "module": "xnat-upload",
+      "version": "1.0.0",
+      "startup_command": "python3 /opt/xnat-upload-extension/neurodesk_server.py",
+      "port": 5050,
+      "description": "Upload medical imaging files (NIfTI, DICOM) to XNAT archive",
+      "start_page": "/",
+      "startup_timeout": 30,
+      "path_rewrites": [],
+      "additional_proxies": []
+    }
+  }
+}

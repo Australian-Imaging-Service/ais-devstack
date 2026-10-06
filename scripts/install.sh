@@ -314,73 +314,6 @@ echo "Waiting for XNAT pod to be ready (this may take several minutes)..."
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=xnat-web -n ais-xnat --timeout=900s
 check_status $?
 
-# Step 10: Enable configured authentication providers
-echo -e "${BLUE}[Step 10] Enabling authentication providers...${NC}"
-# Extract configured OpenID provider IDs from values.yaml
-OPENID_PROVIDERS=$(grep -A2 "openid-auth-plugin:" "$VALUES_FILE" | grep -v "^--" | head -5)
-if grep -q "openid-auth-plugin" "$VALUES_FILE" 2>/dev/null; then
-    # Get provider IDs from the openid-auth-plugin config
-    PROVIDER_IDS=$(grep "id:" "$VALUES_FILE" | grep -A0 -B5 "openid\|auth.*method" | awk '{print $2}' | head -5)
-    # More reliable: extract provider.id values from the openid section
-    PROVIDER_IDS=$(awk '/openid-auth-plugin:/,/^  [^ ]/' "$VALUES_FILE" | grep "id:" | awk '{print $2}')
-    if [ -n "$PROVIDER_IDS" ]; then
-        echo "Found OpenID providers: $PROVIDER_IDS"
-        # Wait for PostgreSQL to be ready
-        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=xnat-web-postgresql -n ais-xnat --timeout=120s 2>/dev/null || true
-        PG_POD=$(kubectl -n ais-xnat get pods -l app.kubernetes.io/name=xnat-web-postgresql -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        DB_PASSWORD=$(grep -A3 "^global:" "$VALUES_FILE" | grep "password:" | head -1 | awk '{print $2}')
-        if [ -n "$PG_POD" ] && [ -n "$DB_PASSWORD" ]; then
-            # Build the enabled providers list: ['localdb','provider1','provider2',...]
-            ENABLED_LIST="['localdb'"
-            for pid in $PROVIDER_IDS; do
-                ENABLED_LIST="${ENABLED_LIST},'${pid}'"
-            done
-            ENABLED_LIST="${ENABLED_LIST}]"
-            echo "Setting enabledProviders to: $ENABLED_LIST"
-            # Update or wait for the preference to exist (XNAT creates it on first startup)
-            for attempt in 1 2 3 4 5; do
-                CURRENT=$(kubectl -n ais-xnat exec "$PG_POD" -- bash -c "PGPASSWORD='$DB_PASSWORD' psql -U xnat -d xnat -t -c \"SELECT value FROM xhbm_preference WHERE name='enabledProviders';\"" 2>/dev/null | tr -d ' ')
-                if [ -n "$CURRENT" ]; then
-                    if echo "$CURRENT" | grep -q "$( echo $PROVIDER_IDS | awk '{print $1}')"; then
-                        echo -e "${GREEN}Providers already enabled: $CURRENT${NC}"
-                    else
-                        # Use a Java helper to avoid shell quoting issues with SQL
-                        XNAT_POD=$(kubectl -n ais-xnat get pods -l app.kubernetes.io/name=xnat-web -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-                        kubectl -n ais-xnat exec "$XNAT_POD" -c xnat-web -- bash -c "cat > /tmp/EnableProviders.java << 'JAVA'
-import java.sql.*;
-public class EnableProviders {
-    public static void main(String[] args) throws Exception {
-        Connection conn = DriverManager.getConnection(args[0], args[1], args[2]);
-        PreparedStatement ps = conn.prepareStatement(\"UPDATE xhbm_preference SET value=? WHERE name='enabledProviders'\");
-        ps.setString(1, args[3]);
-        int rows = ps.executeUpdate();
-        System.out.println(\"Updated enabledProviders (\" + rows + \" rows): \" + args[3]);
-        conn.close();
-    }
-}
-JAVA
-cd /tmp && javac -cp '/usr/local/tomcat/webapps/ROOT/WEB-INF/lib/*:/usr/local/tomcat/webapps/ROOT/WEB-INF/classes' EnableProviders.java && java -cp '.:/usr/local/tomcat/webapps/ROOT/WEB-INF/lib/*:/usr/local/tomcat/webapps/ROOT/WEB-INF/classes' EnableProviders 'jdbc:postgresql://xnat-web-postgresql/xnat' 'xnat' '$DB_PASSWORD' '$ENABLED_LIST'" 2>/dev/null
-                        if [ $? -eq 0 ]; then
-                            echo -e "${GREEN}Authentication providers enabled. Restarting XNAT to apply...${NC}"
-                            kubectl -n ais-xnat delete pod "$XNAT_POD" 2>/dev/null
-                            echo "Waiting for XNAT to restart..."
-                            sleep 10
-                            kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=xnat-web -n ais-xnat --timeout=900s
-                        else
-                            echo -e "${YELLOW}Warning: Could not update enabledProviders automatically.${NC}"
-                            echo "You may need to enable the provider manually in XNAT Admin > Site Administration."
-                        fi
-                    fi
-                    break
-                else
-                    echo "Waiting for XNAT database initialization (attempt $attempt/5)..."
-                    sleep 30
-                fi
-            done
-        fi
-    fi
-fi
-
 echo ""
 echo -e "${GREEN}=========================================="
 echo "   XNAT Installation Complete!"
@@ -403,39 +336,18 @@ echo ""
 
 # Prompt for JupyterHub installation
 echo -e "${BLUE}=========================================="
-echo "   Optional: JupyterHub Integration (neurodesk chart)"
+echo "   Optional: JupyterHub Integration"
 echo "==========================================${NC}"
 echo ""
 echo "JupyterHub provides interactive Jupyter notebooks integrated with XNAT."
-echo "It is now installed by the consolidated jupyterhub/INSTALL.sh flow:"
-echo "  Longhorn + NFS workspace + monitoring (infra) -> the single neurodesk"
-echo "  Helm chart (JupyterHub + CVMFS + smarter-device-manager + Security"
-echo "  Profiles Operator + AppArmor + the XNAT notebook upload extension)."
 echo ""
-JH_DIR="$BASE_DIR/jupyterhub"
-JH_INSTALL="$JH_DIR/INSTALL.sh"
-JH_VALUES="$JH_DIR/neurodesk/values-devstack.yaml"
-JH_TEMPLATE="$JH_DIR/neurodesk/values-devstack.yaml.template"
-read -p "Install JupyterHub now? (y/N): " install_jupyterhub
+read -p "Install JupyterHub? (y/N): " install_jupyterhub
 if [[ "$install_jupyterhub" =~ ^[Yy]$ ]]; then
-    if [ ! -f "$JH_VALUES" ]; then
-        echo ""
-        echo -e "${YELLOW}JupyterHub needs its values file (with your secrets) first:${NC}"
-        echo "  cp $JH_TEMPLATE \\"
-        echo "     $JH_VALUES"
-        echo "  # then edit it: OIDC client_id/secret, xnat-service apiToken, JUPYTERHUB_CRYPT_KEY_HEX"
-        echo ""
-        read -p "Continue without it (the installer will stop until it exists)? (y/N): " cont
-        [[ "$cont" =~ ^[Yy]$ ]] || { echo "Create the values file, then run: cd jupyterhub && ./INSTALL.sh"; exit 0; }
-    fi
     echo ""
-    chmod +x "$JH_INSTALL"
-    (cd "$JH_DIR" && ./INSTALL.sh)
+    "$SCRIPT_DIR/install-jupyterhub.sh"
 else
     echo ""
-    echo "You can install JupyterHub later:"
-    echo "  cd $JH_DIR"
-    echo "  cp neurodesk/values-devstack.yaml.template neurodesk/values-devstack.yaml   # fill in secrets"
-    echo "  ./INSTALL.sh"
+    echo "You can install JupyterHub later by running:"
+    echo "  ./scripts/install-jupyterhub.sh"
     echo ""
 fi

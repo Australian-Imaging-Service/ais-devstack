@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e
+
+echo "=========================================="
+echo "Installing XNAT JupyterHub Plugin v1.3.3"
+echo "=========================================="
+
+# Ensure kubeconfig is available (k3s default requires root)
+export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+
+# Get XNAT plugin JAR (v1.3.3)
+echo "[1/4] Downloading plugin..."
+wget -q https://github.com/NrgXnat/xnat-jupyterhub-plugin/releases/download/v1.3.3/xnat-jupyterhub-plugin-1.3.3.jar
+
+# Ensure local XNAT plugin directory exists
+echo "[2/4] Preparing local XNAT plugin directory..."
+sudo mkdir -p /srv/xnat-local-storage/xnat/plugins
+
+# Copy to XNAT plugins directory
+echo "[3/4] Copying plugin to local XNAT storage..."
+sudo cp xnat-jupyterhub-plugin-1.3.3.jar \
+  /srv/xnat-local-storage/xnat/plugins/
+
+# Restart XNAT to load plugin
+# !!!!Beware this will wipe any ephemeral data in XNAT pods
+echo "[4/4] Restarting XNAT..."
+ kubectl -n ais-xnat rollout restart statefulset/xnat-web
+
+# Wait for XNAT to be ready
+ kubectl -n ais-xnat rollout status statefulset/xnat-web
+
+echo ""
+echo "✓ Plugin installed successfully"
+echo "Login to XNAT and verify plugin in: Administer → Plugin Settings"

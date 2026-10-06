@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cvmfs-trace-parser
+  namespace: mounts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cvmfs-trace-parser
+  template:
+    metadata:
+      labels:
+        app: cvmfs-trace-parser
+    spec:
+      serviceAccountName: cvmfs-file-retriever
+      containers:
+      - name: parser
+        image: python:3.9-slim
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |
+          apt-get update && apt-get install -y curl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && mv kubectl /usr/local/bin/
+          pip install requests
+          python3 /app/parser.py
+        ports:
+        - containerPort: 9002
+          name: metrics
+        volumeMounts:
+        - name: parser-script
+          mountPath: /app
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: NAMESPACE
+          value: mounts
+
+      - name: telegraf
+        image: telegraf:1.31-alpine
+        ports:
+        - containerPort: 8092
+          name: influx-udp
+          protocol: UDP
+        - containerPort: 9001
+          name: prom-telegraf
+        volumeMounts:
+        - name: telegraf-config
+          mountPath: /etc/telegraf/telegraf.conf
+          subPath: telegraf.conf
+
+      volumes:
+      - name: parser-script
+        configMap:
+          name: parser-script
+          defaultMode: 0755
+      - name: telegraf-config
+        configMap:
+          name: telegraf-config

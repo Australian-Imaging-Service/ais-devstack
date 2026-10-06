@@ -1,4 +1,10 @@
-# JupyterHub layer — now a single `neurodesk` Helm chart
+# Optional consolidated `neurodesk` Helm chart
+
+Stanford continues to use the standalone JupyterHub release and component
+scripts documented in `../README.md`. This chart path comes from main; its
+generic values do not include Stanford's current authentication, archive
+mounts, object-store isolation, or upload fixes. Port and validate those
+settings and release/PVC ownership before using it on the Stanford cluster.
 
 This directory replaces the old multi-step, multi-chart way of installing the
 JupyterHub application layer with **one** chart:
@@ -6,7 +12,7 @@ JupyterHub application layer with **one** chart:
 
 ## What the chart now owns (was: separate scripts)
 
-| Old (removed) | Now |
+| Standalone components | Chart equivalent |
 |---|---|
 | `5-jupyterhub-values.yaml` + `9-install-jupyterhub.sh` | JupyterHub (z2jh subchart) |
 | `6-cvmfs-mounts.sh` + `cvmfs_mount/` | CVMFS CSI + smarter-device-manager + `cvmfs` PVC |
