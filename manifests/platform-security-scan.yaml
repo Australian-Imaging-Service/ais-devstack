@@ -1,0 +1,98 @@
+# Daily version-aware CVE scan. Writes a report consumed by the 08:00 digest.
+# Uses only vulnerability scanning: no secret scans, collector jobs, or upgrades.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-security-scan
+  namespace: ais-xnat
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-security-scan-read
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-security-scan-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-security-scan-read
+subjects:
+  - kind: ServiceAccount
+    name: platform-security-scan
+    namespace: ais-xnat
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-security-scan
+  namespace: ais-xnat
+spec:
+  schedule: "0 4 * * *"
+  timeZone: "America/Los_Angeles"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 10800
+      template:
+        spec:
+          serviceAccountName: platform-security-scan
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: xnat-host
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: scan
+              image: xnat-platform-monitor:security-digest-20261113
+              imagePullPolicy: IfNotPresent
+              command: ["python", "/usr/local/bin/security_scan.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef: {fieldPath: spec.nodeName}
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "4Gi"
+              volumeMounts:
+                - name: host-root
+                  mountPath: /host
+                  readOnly: true
+                - name: monitor-state
+                  mountPath: /state
+                - name: temporary
+                  mountPath: /tmp
+          volumes:
+            - name: host-root
+              hostPath:
+                path: /
+                type: Directory
+            - name: monitor-state
+              hostPath:
+                path: /srv/xnat-local-storage/monitoring
+                type: DirectoryOrCreate
+            - name: temporary
+              emptyDir: {}

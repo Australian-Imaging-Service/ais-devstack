@@ -1,0 +1,151 @@
+# Platform monitor
+# Checks disk usage, pod/job/cronjob health, XNAT availability, TLS expiry,
+# Container Service Docker ping, XNAT-to-JupyterHub service auth, stale
+# Jupyter named servers/home volumes, failed XNAT workflows, pending project
+# access requests, edge ingest heartbeats/routing failures, and stuck ingest
+# staging. Emails alerts for new problems,
+# recovery notices when they clear, 24h re-alerts while they persist, and a
+# daily digest (dead-man's switch), including installed and latest stable XNAT
+# versions from the official download page, to the address in the
+# platform-monitor-smtp secret.
+#
+# Install/update (builds the image and creates the SMTP secret):
+#   ./scripts/install-platform-monitor.sh
+#
+# Manual trigger:
+#   sudo kubectl -n ais-xnat create job --from=cronjob/platform-monitor platform-monitor-manual-$(date +%s)
+#
+# State lives at /srv/xnat-local-storage/monitoring/state.json on the host;
+# delete it to re-alert on all currently-active problems.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-monitor
+  namespace: ais-xnat
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-monitor-read
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumes", "replicas"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-monitor-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-monitor-read
+subjects:
+  - kind: ServiceAccount
+    name: platform-monitor
+    namespace: ais-xnat
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-monitor
+  namespace: ais-xnat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      # Never let a hung run block later runs (project-owner-sync once hung 13h).
+      activeDeadlineSeconds: 840
+      template:
+        spec:
+          serviceAccountName: platform-monitor
+          restartPolicy: Never
+          containers:
+            - name: monitor
+              image: xnat-platform-monitor:security-digest-20261113
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef: {fieldPath: spec.nodeName}
+                - name: SMTP_USER
+                  valueFrom:
+                    secretKeyRef: { name: platform-monitor-smtp, key: username }
+                - name: SMTP_PASS
+                  valueFrom:
+                    secretKeyRef: { name: platform-monitor-smtp, key: password }
+                - name: ALERT_TO
+                  valueFrom:
+                    secretKeyRef: { name: platform-monitor-smtp, key: to }
+                - name: XNAT_USER
+                  valueFrom:
+                    secretKeyRef: { name: xnat-archiver-creds, key: username }
+                - name: XNAT_PASS
+                  valueFrom:
+                    secretKeyRef: { name: xnat-archiver-creds, key: password }
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: xnat-web-postgresql, key: password }
+                - name: XNAT_PUBLIC_URL
+                  value: "https://xnat-lucas.neurodesk.org"
+                - name: TZ_NAME
+                  value: "America/Los_Angeles"
+                - name: DIGEST_HOUR
+                  value: "8"
+                - name: EXPECTED_EDGES
+                  value: "edge-rsl60"
+                - name: EDGE_HEALTH_MAX_AGE_MINUTES
+                  value: "10"
+                # Suppress transient policy blocks while a newly-routed project
+                # is admitted; persistent routing mistakes still alert.
+                - name: EDGE_BLOCKED_GRACE_MINUTES
+                  value: "30"
+                - name: REIMPORT_PENDING_MAX_MINUTES
+                  value: "45"
+                - name: REIMPORT_READY_MAX_MINUTES
+                  value: "10"
+                - name: REIMPORT_STATE_RESET_ALERT_HOURS
+                  value: "24"
+                # A completed ingest normally clears in minutes. Two hours
+                # catches a failed re-import without waiting a full day.
+                - name: STAGED_MAX_AGE_HOURS
+                  value: "2"
+              volumeMounts:
+                - name: host-root
+                  mountPath: /host
+                  readOnly: true
+                  mountPropagation: HostToContainer
+                - name: monitor-state
+                  mountPath: /state
+                # Dedicated bind of the gcsfuse submount for the db-backup
+                # check: the submount does not propagate reliably through
+                # the recursive /host bind (same lesson as qsmxt-scan-link-sync).
+                - name: object-store
+                  mountPath: /object-store
+                  readOnly: true
+                  mountPropagation: HostToContainer
+          volumes:
+            - name: host-root
+              hostPath:
+                path: /
+                type: Directory
+            - name: monitor-state
+              hostPath:
+                path: /srv/xnat-local-storage/monitoring
+                type: DirectoryOrCreate
+            - name: object-store
+              hostPath:
+                path: /srv/xnat-local-storage/gpfs/object-store
+                type: Directory

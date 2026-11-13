@@ -367,6 +367,14 @@ kubectl -n ais-xnat get pvc
 kubectl -n ais-xnat logs xnat-web-0-postgresql-0
 ```
 
+## Daily status email
+
+The platform monitor sends a daily system digest, including the installed XNAT
+version and whether a newer stable release or maintenance update is available.
+It also reports prioritized CVEs affecting the scanned deployed stack, with
+affected components, available fixes, and scan coverage/freshness.
+See [monitoring/README.md](monitoring/README.md) for details and deployment.
+
 ## Plugins
 
 Plugins in the `plugins/` directory are automatically copied to the NFS server during installation.
